@@ -11,6 +11,7 @@ export const DEFAULT_GRID = Object.freeze({
 export const ENDPOINTS = Object.freeze({
     cdo: "/fetch/cdo",
     generateBiGrid: "/generate/bigrid",
+    generateBiGrid3D: "/generate/3d-diagonal-directional/bigrid",
 });
 
 /** Allowed response formats */

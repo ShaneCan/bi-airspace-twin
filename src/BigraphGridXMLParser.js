@@ -156,6 +156,8 @@ export function parseBigraphXML_singleBRoot(xmlString, coordinatesAsLinks = fals
     const bChildren = bRoot.getElementsByTagNameNS("", "bChild");
 
     let localRootIndex = 0;
+    let localeIndex = 0; // Track the index of locales in the XML
+    
     for (let ix = 0; ix < bChildren.length; ix++) {
         const bChild = bChildren[ix];
         // Check if this bChild is a Locale type (xsi:type="bigraphBaseModel:Locale")
@@ -165,31 +167,81 @@ export function parseBigraphXML_singleBRoot(xmlString, coordinatesAsLinks = fals
             const bCoordChild = bChild.getElementsByTagNameNS("", "bChild");
 
             // use outer names to retrieve coordinates
+            let pointFound = false;
             if (coordinatesAsLinks === true) {
-                // Now find all bPorts for this Locale
-                const res = extractLocalePortPoint(bChild, outerNames, /* preferredIndex: */ 4, parseParamControl);
-                if (res) {
-                    // console.log(
-                    //     `Locale: ${locName}, OuterName[${res.index}]="${res.outerName}", portIndex=${res.portIndex}, bLink="${res.bLink}", X,Y=[${res.point.x} | ${res.point.y}]`
-                    // );
-                    cells.push({index: res.index, locale: locName, point: res.point});
-                }
-            }
-            for (let i = 0; i < bCoordChild.length; i++) {
-                const bChildCoord = bCoordChild[i];
-                const xsiTypePorts = bChildCoord.getAttribute("xsi:type");
-                if (coordinatesAsLinks === false) {
-                    if (xsiTypePorts && xsiTypePorts.includes("bigraphBaseModel:CO")) {
-                        const coordNode = bChildCoord.getElementsByTagNameNS("", "bChild")[0];
-                        const result = coordNode.getAttribute("xsi:type").split(":")[1];
-                        const point = parseParamControl(result);
+                // For 3D bigrid, locales are created in order and outerNames are in the same order
+                // So we can directly use the locale index to get the corresponding outerName
+                if (localeIndex < outerNames.length) {
+                    const outerName = outerNames[localeIndex];
+                    try {
+                        const point = parseParamControl(outerName);
                         cells.push({
-                            index: localRootIndex++,
+                            index: localeIndex,
                             locale: locName,
                             point: point
                         });
+                        pointFound = true;
+                        localeIndex++;
+                    } catch (e) {
+                        console.warn(`Locale ${locName}: Failed to parse outerName at index ${localeIndex}: ${outerName}`, e);
+                        // Fallback to port-based extraction
+                        const res = extractLocalePortPoint(bChild, outerNames, /* preferredIndex: */ 4, parseParamControl);
+                        if (res) {
+                            cells.push({index: res.index, locale: locName, point: res.point});
+                            pointFound = true;
+                            localeIndex++;
+                        }
+                    }
+                } else {
+                    // Fallback to port-based extraction if index is out of range
+                    const res = extractLocalePortPoint(bChild, outerNames, /* preferredIndex: */ 4, parseParamControl);
+                    if (res) {
+                        cells.push({index: res.index, locale: locName, point: res.point});
+                        pointFound = true;
+                        localeIndex++;
+                    } else {
+                        // Debug: log when extractLocalePortPoint fails
+                        const bPorts = bChild.getElementsByTagNameNS("", "bPorts");
+                        if (bPorts.length === 0) {
+                            console.warn(`Locale ${locName} has no bPorts`);
+                        } else {
+                            console.warn(`Locale ${locName}: extractLocalePortPoint failed, ${bPorts.length} ports found`);
+                        }
                     }
                 }
+            }
+            
+            // Fallback: try to extract from CO nodes if coordinatesAsLinks method failed
+            if (!pointFound) {
+                for (let i = 0; i < bCoordChild.length; i++) {
+                    const bChildCoord = bCoordChild[i];
+                    const xsiTypePorts = bChildCoord.getAttribute("xsi:type");
+                    if (xsiTypePorts && xsiTypePorts.includes("bigraphBaseModel:CO")) {
+                        const coordNode = bChildCoord.getElementsByTagNameNS("", "bChild")[0];
+                        if (coordNode) {
+                            try {
+                                const result = coordNode.getAttribute("xsi:type").split(":")[1];
+                                const point = parseParamControl(result);
+                                cells.push({
+                                    index: localRootIndex++,
+                                    locale: locName,
+                                    point: point
+                                });
+                                pointFound = true;
+                                localeIndex++; // Increment even when using CO node fallback
+                                break; // Found coordinate, no need to continue
+                            } catch (e) {
+                                console.warn(`Failed to parse coordinate for locale ${locName} from CO node:`, e);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Log warning if no coordinate was found
+            if (!pointFound) {
+                console.warn(`No coordinate found for locale: ${locName} at index ${localeIndex}`);
+                // Don't increment localeIndex if we didn't find a coordinate
             }
         }
     }
@@ -207,6 +259,64 @@ export function parseBigraphXML_singleBRoot(xmlString, coordinatesAsLinks = fals
  */
 
 /**
+ * Extract coordinate for 3D bigrid by trying all ports and finding unique coordinates.
+ * This helps avoid duplicates when multiple locales share ports.
+ */
+function extractLocalePortPointFor3D(bChild, outerNames, localeName, parseParamControl) {
+    const bPorts = bChild.getElementsByTagNameNS("", "bPorts");
+    if (!bPorts || bPorts.length === 0) {
+        return null;
+    }
+
+    const portsArray = Array.from(bPorts);
+    const triedIndices = new Set();
+    
+    // Try all ports and collect valid coordinates
+    const validPorts = [];
+    for (let i = 0; i < portsArray.length; i++) {
+        const port = portsArray[i];
+        if (port.hasAttribute("bLink")) {
+            const bLink = port.getAttribute("bLink") || "";
+            const match = /bOuterNames\.(\d+)/.exec(bLink);
+            if (match) {
+                const idx = Number(match[1]);
+                if (idx >= 0 && idx < outerNames.length && !triedIndices.has(idx)) {
+                    const outerName = outerNames[idx];
+                    if (outerName != null) {
+                        try {
+                            const point = parseParamControl(outerName);
+                            validPorts.push({
+                                index: idx,
+                                point,
+                                outerName,
+                                bLink,
+                                portIndex: i
+                            });
+                            triedIndices.add(idx);
+                        } catch (e) {
+                            // Continue to next port if parsing fails
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // If we found exactly one valid port, use it
+    // Otherwise, prefer the one that matches the locale's expected pattern
+    if (validPorts.length === 1) {
+        return validPorts[0];
+    } else if (validPorts.length > 1) {
+        // For 3D bigrid, locale names are like "v{index2D}_L{layer}"
+        // Try to find the port that matches the locale's position
+        // Use the first valid port as fallback
+        return validPorts[0];
+    }
+    
+    return null;
+}
+
+/**
  * Extract outer-name index and point from a Locale's <bPorts>.
  * Falls back gracefully if the preferred index is missing.
  *
@@ -218,33 +328,83 @@ export function parseBigraphXML_singleBRoot(xmlString, coordinatesAsLinks = fals
  */
 function extractLocalePortPoint(bChild, outerNames, preferredIndex = null, parseParamControl) {
     const bPorts = bChild.getElementsByTagNameNS("", "bPorts");
-    if (!bPorts || bPorts.length === 0) return null;
-
-    // try preferred index if given, else first with a valid bLink
-    let chosen = null;
-    if (preferredIndex != null && bPorts[preferredIndex]) {
-        chosen = bPorts[preferredIndex];
-    } else {
-        chosen = Array.from(bPorts).find(p => p.hasAttribute("bLink"));
+    if (!bPorts || bPorts.length === 0) {
+        return null;
     }
-    if (!chosen) return null;
 
-    const bLink = chosen.getAttribute("bLink") || "";
-    const match = /bOuterNames\.(\d+)/.exec(bLink);
-    if (!match) return null;
-
-    const idx = Number(match[1]);
-    const outerName = outerNames[idx];
-    if (outerName == null) return null;
-
-    const point = parseParamControl(outerName);
-    return {
-        index: idx,
-        point,
-        outerName,
-        bLink,
-        portIndex: Array.prototype.indexOf.call(bPorts, chosen)
-    };
+    const localeName = bChild.getAttribute("name") || "unknown";
+    const portsArray = Array.from(bPorts);
+    
+    // Try preferred index first if given
+    if (preferredIndex != null && preferredIndex < portsArray.length) {
+        const chosen = portsArray[preferredIndex];
+        if (chosen.hasAttribute("bLink")) {
+            const bLink = chosen.getAttribute("bLink") || "";
+            const match = /bOuterNames\.(\d+)/.exec(bLink);
+            if (match) {
+                const idx = Number(match[1]);
+                if (idx >= 0 && idx < outerNames.length) {
+                    const outerName = outerNames[idx];
+                    if (outerName != null) {
+                        try {
+                            const point = parseParamControl(outerName);
+                            return {
+                                index: idx,
+                                point,
+                                outerName,
+                                bLink,
+                                portIndex: preferredIndex
+                            };
+                        } catch (e) {
+                            console.warn(`Locale ${localeName}: Failed to parse outerName at index ${idx}: ${outerName}`, e);
+                        }
+                    } else {
+                        console.warn(`Locale ${localeName}: outerName at index ${idx} is null`);
+                    }
+                } else {
+                    console.warn(`Locale ${localeName}: outerName index ${idx} out of range (0-${outerNames.length - 1})`);
+                }
+            }
+        }
+    }
+    
+    // If preferred index failed or not given, try all ports with bLink
+    for (let i = 0; i < portsArray.length; i++) {
+        const port = portsArray[i];
+        // Skip if we already tried this port as preferredIndex
+        if (preferredIndex != null && i === preferredIndex) continue;
+        
+        if (port.hasAttribute("bLink")) {
+            const bLink = port.getAttribute("bLink") || "";
+            const match = /bOuterNames\.(\d+)/.exec(bLink);
+            if (match) {
+                const idx = Number(match[1]);
+                if (idx >= 0 && idx < outerNames.length) {
+                    const outerName = outerNames[idx];
+                    if (outerName != null) {
+                        try {
+                            const point = parseParamControl(outerName);
+                            return {
+                                index: idx,
+                                point,
+                                outerName,
+                                bLink,
+                                portIndex: i
+                            };
+                        } catch (e) {
+                            // Continue to next port if parsing fails
+                            console.warn(`Locale ${localeName}: Failed to parse outerName at index ${idx}: ${outerName}`, e);
+                        }
+                    }
+                } else {
+                    console.warn(`Locale ${localeName}: outerName index ${idx} out of range (0-${outerNames.length - 1})`);
+                }
+            }
+        }
+    }
+    
+    console.warn(`Locale ${localeName}: No valid coordinate found in ${portsArray.length} ports`);
+    return null;
 }
 
 function parseParamControl(formattedString) {
@@ -261,15 +421,30 @@ function parseParamControl(formattedString) {
 
         const xString = parts[0].replace(/N/g, "-").replace(/_/g, ".");
         const yString = parts[1].replace(/N/g, "-").replace(/_/g, ".");
-
+        
         const x = parseFloat(xString);
         const y = parseFloat(yString);
+        
+        // Check if z coordinate exists (3D format)
+        let z = undefined;
+        if (parts.length >= 3 && parts[2]) {
+            const zString = parts[2].replace(/N/g, "-").replace(/_/g, ".");
+            z = parseFloat(zString);
+            if (isNaN(z)) {
+                z = undefined;
+            }
+        }
 
         if (isNaN(x) || isNaN(y)) {
             throw new Error("Invalid number format");
         }
 
-        return {x, y}; // similar to Point2D.Float in structure
+        // Return 2D or 3D point based on whether z exists
+        if (z !== undefined) {
+            return {x, y, z};
+        } else {
+            return {x, y};
+        }
     } catch (e) {
         throw new Error("Invalid format: " + e.message);
     }

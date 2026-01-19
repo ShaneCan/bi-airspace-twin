@@ -1,7 +1,7 @@
 import {ENDPOINTS, FORMATS, DEFAULT_GRID} from "./config.js";
 import {BlockWorld} from './BlockWorld.js';
 import {parseBigraphXML, parseBigraphXML_singleBRoot} from './BigraphGridXMLParser.js';
-import {fetchCdoModel, fetchGrid} from "./services.js";
+import {fetchCdoModel, fetchGrid, fetchGrid3D} from "./services.js";
 
 import * as THREE from 'three';
 import {createScene} from "./scene.js";
@@ -12,7 +12,7 @@ const {scene, camera, renderer, controls} = createScene();
 
 const velocity = new THREE.Vector3();
 const direction = new THREE.Vector3();
-const move = {forward: false, backward: false, left: false, right: false};
+const move = {forward: false, backward: false, left: false, right: false, up: false, down: false};
 const speed = 5; // units per second
 let prevTime = performance.now();
 
@@ -31,8 +31,77 @@ let liveBlock = [];
 let numOfLiveBlocks = 4;
 let connectionMode = "websocket";
 let rosUnsubscribeFunctions = [];
+let gridMode = "2d"; // "2d" or "3d"
+let droneDisplayMode = "cube"; // "cube" or "drone"
 
 let rowsSlider, colsSlider, stepXSlider, stepYSlider;
+
+// Create a drone 3D model (quadcopter style)
+function createDroneModel(size, color) {
+    const droneGroup = new THREE.Group();
+    const bodyMaterial = new THREE.MeshStandardMaterial({color: color});
+    const propMaterial = new THREE.MeshStandardMaterial({
+        color: color,
+        transparent: true,
+        opacity: 0.6
+    });
+    
+    // Main body (center, slightly flattened)
+    const bodyWidth = size * 0.25;
+    const bodyLength = size * 0.3;
+    const bodyHeight = size * 0.08;
+    const body = new THREE.Mesh(
+        new THREE.BoxGeometry(bodyWidth, bodyLength, bodyHeight),
+        bodyMaterial
+    );
+    droneGroup.add(body);
+    
+    // Four arms extending diagonally from center (X configuration)
+    const armLength = size * 0.35;
+    const armWidth = size * 0.04;
+    const armHeight = size * 0.02;
+    
+    // X configuration: arms at 45-degree angles
+    const armAngles = [Math.PI / 4, -Math.PI / 4, 3 * Math.PI / 4, -3 * Math.PI / 4];
+    
+    armAngles.forEach((angle, index) => {
+        const x = Math.cos(angle) * armLength;
+        const y = Math.sin(angle) * armLength;
+        
+        // Arm
+        const arm = new THREE.Mesh(
+            new THREE.BoxGeometry(armWidth, armLength, armHeight),
+            bodyMaterial
+        );
+        arm.rotation.z = angle;
+        arm.position.set(x, y, 0);
+        droneGroup.add(arm);
+        
+        // Motor housing at the end of each arm
+        const motorRadius = size * 0.06;
+        const motorHeight = size * 0.05;
+        const motor = new THREE.Mesh(
+            new THREE.CylinderGeometry(motorRadius, motorRadius, motorHeight, 12),
+            bodyMaterial
+        );
+        motor.rotation.x = Math.PI / 2;
+        motor.position.set(x, y, motorHeight / 2);
+        droneGroup.add(motor);
+        
+        // Propeller above motor
+        const propRadius = size * 0.12;
+        const propHeight = size * 0.008;
+        const propeller = new THREE.Mesh(
+            new THREE.CylinderGeometry(propRadius, propRadius, propHeight, 16),
+            propMaterial
+        );
+        propeller.rotation.x = Math.PI / 2;
+        propeller.position.set(x, y, motorHeight + propHeight / 2);
+        droneGroup.add(propeller);
+    });
+    
+    return droneGroup;
+}
 
 // Add a sample block
 
@@ -41,25 +110,34 @@ function initLiveBlock(resolutionFactor, numOfBlocks = 4) {
     liveBlock.forEach(block => world.remove(block));
     liveBlock = [];
 
-    // const liveBlockMaterial = new THREE.MeshStandardMaterial({ color: 0x0000ff });
-
     for (let i = 0; i < numOfBlocks; i++) {
         const color = new THREE.Color().setHSL((0.6 + i * 0.1) % 1.0, 1.0, 0.5);
-        const liveBlockMaterial = new THREE.MeshStandardMaterial({color});
-        const block = new THREE.Mesh(
-            new THREE.BoxGeometry(
-                1 * resolutionFactor,
-                1 * resolutionFactor,
-                1 * resolutionFactor
-            ),
-            liveBlockMaterial
-        );
+        
+        let droneObject;
+        
+        if (droneDisplayMode === "drone") {
+            // Create drone model
+            const droneSize = 0.8 * resolutionFactor;
+            droneObject = createDroneModel(droneSize, color);
+        } else {
+            // Create cube
+            const liveBlockMaterial = new THREE.MeshStandardMaterial({color});
+            const droneSize = 0.8 * resolutionFactor;
+            droneObject = new THREE.Mesh(
+                new THREE.BoxGeometry(
+                    droneSize,
+                    droneSize,
+                    droneSize
+                ),
+                liveBlockMaterial
+            );
+        }
 
         // Example placement: offset each block in x-direction
-        block.position.set(0, 0, 1.5);
+        droneObject.position.set(0, 0, 1.5);
 
-        world.add(block);
-        liveBlock.push(block);
+        world.add(droneObject);
+        liveBlock.push(droneObject);
     }
 }
 
@@ -84,6 +162,15 @@ function animate() {
 
     velocity.x = direction.x * speed * delta;
     velocity.z = direction.z * speed * delta;
+    
+    // Vertical movement (Q = up, E = down)
+    const verticalSpeed = speed * delta;
+    if (move.up) {
+        controls.getObject().position.y += verticalSpeed;
+    }
+    if (move.down) {
+        controls.getObject().position.y -= verticalSpeed;
+    }
 
     controls.moveRight(velocity.x);
     controls.moveForward(velocity.z);
@@ -108,7 +195,12 @@ function updateLiveBlockPosition([x, y, z], liveBlockIndex = 0) {
         return;
     }
     
-    liveBlock[liveBlockIndex].position.set(x, y, 1.5);
+    // Use z coordinate if in 3D mode, otherwise use default height
+    if (gridMode === "3d" && z !== undefined) {
+        liveBlock[liveBlockIndex].position.set(x, y, z);
+    } else {
+        liveBlock[liveBlockIndex].position.set(x, y, 1.5);
+    }
 }
 
 function bindSlider(id, valueId) {
@@ -151,7 +243,8 @@ async function fetchSampleAndRender(filename, version = 0) {
                     cell.point.y,
                     1,
                     resolutionFactor,
-                    grassMaterial
+                    grassMaterial,
+                    false
                 );
             }
         })
@@ -161,7 +254,7 @@ async function fetchSampleAndRender(filename, version = 0) {
 }
 
 async function fetchGridAndRender(rows = 3, cols = 3, stepSizeX = 1.0, stepSizeY = 1.0) {
-    console.log('Generating bigrid ...');
+    console.log('Generating 2D bigrid ...');
 
     // 1) Call service
     const {xmlString, resolutionFactor} = await fetchGrid({
@@ -178,10 +271,130 @@ async function fetchGridAndRender(rows = 3, cols = 3, stepSizeX = 1.0, stepSizeY
     blockWorld.clearAll();
     initLiveBlock(resolutionFactor, numOfLiveBlocks);
     for (const cell of cells) {
-        blockWorld.setBlock(cell.point.x, cell.point.y, 1, resolutionFactor, grassMaterial);
+        blockWorld.setBlock(cell.point.x, cell.point.y, 1, resolutionFactor, grassMaterial, false);
     }
 
     console.log("Loaded bigraph with", cells.length, "roots");
+}
+
+async function fetchGridAndRender3D(rows = 3, cols = 3, layers = 3, stepSizeX = 1.0, stepSizeY = 1.0, layerHeight = 2.0) {
+    console.log('Generating 3D bigrid ...');
+
+    // 1) Call service
+    const {xmlString, resolutionFactor} = await fetchGrid3D({
+        rows,
+        cols,
+        layers,
+        stepX: stepSizeX,
+        stepY: stepSizeY,
+        layerHeight: layerHeight,
+    });
+
+    // 2) Parse XML
+    const {cells, linkMap} = parseBigraphXML_singleBRoot(xmlString, true);
+
+    // 3) Map roots → 3D cubes
+    blockWorld.clearAll();
+    initLiveBlock(resolutionFactor, numOfLiveBlocks);
+    
+    console.log(`Parsed ${cells.length} cells from XML`);
+    
+    // Create a set to track rendered coordinates for debugging
+    const renderedCoords = new Set();
+    const coordMap = new Map(); // Track which cells map to which coordinates
+    const allCoords = new Set(); // Track all coordinates we try to render
+    let renderedCount = 0;
+    let skippedCount = 0;
+    let duplicateCount = 0;
+    
+    // First pass: collect all coordinates
+    for (const cell of cells) {
+        const z = cell.point.z !== undefined ? cell.point.z : 0;
+        if (cell.point.x !== undefined && cell.point.y !== undefined) {
+            const coordKey = `${cell.point.x},${cell.point.y},${z}`;
+            allCoords.add(coordKey);
+        }
+    }
+    
+    console.log(`Unique coordinates to render: ${allCoords.size} out of ${cells.length} cells`);
+    
+    // Second pass: render cubes
+    for (const cell of cells) {
+        // Use z coordinate if available, otherwise use 0 (bottom layer)
+        const z = cell.point.z !== undefined ? cell.point.z : 0;
+        if (cell.point.x !== undefined && cell.point.y !== undefined) {
+            const coordKey = `${cell.point.x},${cell.point.y},${z}`;
+            
+            // Check for duplicates before rendering
+            if (renderedCoords.has(coordKey)) {
+                console.warn(`Duplicate coordinate detected: (${cell.point.x}, ${cell.point.y}, ${z}) from locale ${cell.locale}`);
+                duplicateCount++;
+            } else {
+                renderedCoords.add(coordKey);
+                coordMap.set(coordKey, cell);
+            }
+            
+            blockWorld.setBlock(cell.point.x, cell.point.y, z, resolutionFactor, grassMaterial, true, layerHeight);
+            renderedCount++;
+        } else {
+            console.warn(`Skipping cell with invalid coordinates:`, cell);
+            skippedCount++;
+        }
+    }
+    
+    console.log(`Rendering summary: ${renderedCount} attempted, ${duplicateCount} duplicates detected, ${skippedCount} skipped`);
+    console.log(`Unique coordinates: ${allCoords.size}, Rendered coordinates: ${renderedCoords.size}`);
+
+    console.log(`Loaded 3D bigraph: ${cells.length} cells parsed, ${renderedCount} cubes rendered, ${skippedCount} skipped`);
+    
+    // Debug: Check if we're missing any expected coordinates
+    const expectedCount = rows * cols * layers;
+    if (renderedCoords.size < expectedCount) {
+        console.warn(`Expected ${expectedCount} unique cubes but only have ${renderedCoords.size} unique coordinates`);
+        console.warn(`Rendered ${renderedCount} cubes (may include duplicates)`);
+        
+        // Log missing coordinates
+        const missingCoords = [];
+        for (let layer = 0; layer < layers; layer++) {
+            for (let row = 0; row < rows; row++) {
+                for (let col = 0; col < cols; col++) {
+                    const expectedZ = layer * layerHeight;
+                    const expectedX = row * stepSizeX;
+                    const expectedY = col * stepSizeY;
+                    const coordKey = `${expectedX},${expectedY},${expectedZ}`;
+                    if (!renderedCoords.has(coordKey)) {
+                        missingCoords.push(`(${expectedX}, ${expectedY}, ${expectedZ})`);
+                    }
+                }
+            }
+        }
+        
+        if (missingCoords.length > 0) {
+            console.warn(`Missing ${missingCoords.length} cubes:`, missingCoords.slice(0, 10));
+            if (missingCoords.length > 10) {
+                console.warn(`... and ${missingCoords.length - 10} more`);
+            }
+        }
+        
+        // Also check for unexpected coordinates
+        const unexpectedCoords = [];
+        for (const coordKey of renderedCoords) {
+            const [x, y, z] = coordKey.split(',').map(Number);
+            const expectedRow = Math.round(x / stepSizeX);
+            const expectedCol = Math.round(y / stepSizeY);
+            const expectedLayer = Math.round(z / layerHeight);
+            
+            if (expectedRow < 0 || expectedRow >= rows || 
+                expectedCol < 0 || expectedCol >= cols || 
+                expectedLayer < 0 || expectedLayer >= layers) {
+                unexpectedCoords.push(coordKey);
+            }
+        }
+        
+        if (unexpectedCoords.length > 0) {
+            console.warn(`Found ${unexpectedCoords.length} unexpected coordinates:`, unexpectedCoords.slice(0, 10));
+        }
+    }
 }
 
 async function fetchCdoAndRender(address, repoPath, coordinatesAsLinks = false, {signal} = {}) {
@@ -202,7 +415,7 @@ async function fetchCdoAndRender(address, repoPath, coordinatesAsLinks = false, 
     blockWorld.clearAll();
     initLiveBlock(resolutionFactor, numOfLiveBlocks);
     for (const cell of cells) {
-        blockWorld.setBlock(cell.point.x, cell.point.y, 1, resolutionFactor, grassMaterial);
+        blockWorld.setBlock(cell.point.x, cell.point.y, 1, resolutionFactor, grassMaterial, false);
     }
 
     console.log("Loaded bigraph with", cells.length, "roots");
@@ -222,6 +435,28 @@ document.addEventListener('DOMContentLoaded', () => {
     stepYSlider = bindSlider('stepYSlider', 'stepYValue');
 
     connectionMode = modeSelect.value;
+    
+    // Track grid mode
+    const gridModeSelect = document.getElementById("gridMode");
+    if (gridModeSelect) {
+        gridMode = gridModeSelect.value;
+        gridModeSelect.addEventListener("change", (e) => {
+            gridMode = e.target.value;
+            console.log(`Grid mode switched: ${gridMode}`);
+        });
+    }
+    
+    // Track drone display mode
+    const droneDisplayModeSelect = document.getElementById("droneDisplayMode");
+    if (droneDisplayModeSelect) {
+        droneDisplayMode = droneDisplayModeSelect.value;
+        droneDisplayModeSelect.addEventListener("change", (e) => {
+            droneDisplayMode = e.target.value;
+            console.log(`Drone display mode switched: ${droneDisplayMode}`);
+            // Reinitialize live blocks with new display mode
+            initLiveBlock(resolutionFactor, numOfLiveBlocks);
+        });
+    }
 
     modeSelect.addEventListener("change", (e) => {
         connectionMode = e.target.value;
@@ -265,6 +500,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const xmiModeSelect = document.getElementById("xmiMode");
 
     uploadBtn.addEventListener("click", async () => {
+        // Disable in 3D mode
+        if (gridMode === "3d") {
+            alert("XMI Upload is not available in 3D mode.");
+            return;
+        }
+        
         const file = uploadInput.files?.[0];
         if (!file) {
             alert("Please select an XMI file first.");
@@ -293,6 +534,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
     document.getElementById('fetchSampleModel_0').addEventListener('click', (event) => {
+        // Disable in 3D mode
+        if (gridMode === "3d") {
+            alert("Samples are not available in 3D mode.");
+            return;
+        }
+        
         const stepSize = event.currentTarget.dataset.stepsize;
         console.log("fetchSampleModel_0", stepSize);
         resolutionFactor = stepSize;
@@ -302,6 +549,12 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     document.getElementById('fetchSampleModel_A').addEventListener('click', (event) => {
+        // Disable in 3D mode
+        if (gridMode === "3d") {
+            alert("Samples are not available in 3D mode.");
+            return;
+        }
+        
         const stepSize = event.currentTarget.dataset.stepsize;
         console.log("fetchSampleModel_A", stepSize)
         resolutionFactor = stepSize;
@@ -311,6 +564,12 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     document.getElementById('fetchSampleModel_B').addEventListener('click', (event) => {
+        // Disable in 3D mode
+        if (gridMode === "3d") {
+            alert("Samples are not available in 3D mode.");
+            return;
+        }
+        
         const stepSize = event.currentTarget.dataset.stepsize;
         console.log("fetchSampleModel_B", stepSize)
         resolutionFactor = stepSize;
@@ -325,15 +584,29 @@ document.addEventListener('DOMContentLoaded', () => {
         const cols = +document.getElementById("colsSlider").value;
         const stepX = +document.getElementById("stepXSlider").value;
         const stepY = +document.getElementById("stepYSlider").value;
+        const gridModeSelect = document.getElementById("gridMode");
+        const currentGridMode = gridModeSelect ? gridModeSelect.value : "2d";
 
-        console.log(`Call API with rows=${rows}, cols=${cols}, stepX=${stepX}, stepY=${stepY}`);
-
-        try {
-            fetchGridAndRender(rows, cols, stepX, stepY).then(r => {
-                console.log("Finished");
-            });
-        } catch (err) {
-            console.error("Failed to generate bigraph grid:", err);
+        if (currentGridMode === "3d") {
+            const layers = +document.getElementById("layersSlider").value;
+            const layerHeight = +document.getElementById("layerHeightSlider").value;
+            console.log(`Call 3D API with rows=${rows}, cols=${cols}, layers=${layers}, stepX=${stepX}, stepY=${stepY}, layerHeight=${layerHeight}`);
+            try {
+                fetchGridAndRender3D(rows, cols, layers, stepX, stepY, layerHeight).then(r => {
+                    console.log("Finished");
+                });
+            } catch (err) {
+                console.error("Failed to generate 3D bigraph grid:", err);
+            }
+        } else {
+            console.log(`Call 2D API with rows=${rows}, cols=${cols}, stepX=${stepX}, stepY=${stepY}`);
+            try {
+                fetchGridAndRender(rows, cols, stepX, stepY).then(r => {
+                    console.log("Finished");
+                });
+            } catch (err) {
+                console.error("Failed to generate bigraph grid:", err);
+            }
         }
     });
 
@@ -377,6 +650,12 @@ document.addEventListener('DOMContentLoaded', () => {
             case 'KeyD':
                 move.right = true;
                 break;
+            case 'KeyQ':
+                move.up = true;
+                break;
+            case 'KeyE':
+                move.down = true;
+                break;
         }
     });
 
@@ -393,6 +672,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 break;
             case 'KeyD':
                 move.right = false;
+                break;
+            case 'KeyQ':
+                move.up = false;
+                break;
+            case 'KeyE':
+                move.down = false;
                 break;
         }
     });

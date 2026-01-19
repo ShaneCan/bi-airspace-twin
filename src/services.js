@@ -35,6 +35,44 @@ export async function fetchGrid({
 }
 
 /**
+ * Calls the 3D grid generator endpoint and returns:
+ * { xmlString, resolutionFactor }
+ */
+export async function fetchGrid3D({
+                                    rows = 3,
+                                    cols = 3,
+                                    layers = 3,
+                                    stepX = 1.0,
+                                    stepY = 1.0,
+                                    layerHeight = 2.0,
+                                    format = FORMATS.xml,
+                                    signal,
+                                }) {
+    // Query params (server expects rows/cols/layers/format)
+    const query = qs({rows, cols, layers, format});
+
+    // POST body (server expects step sizes, layer height and origin)
+    const body = {
+        x: 0,
+        y: 0,
+        z: 0,
+        stepSizeX: stepX,
+        stepSizeY: stepY,
+        layerHeight: layerHeight,
+    };
+
+    const url = `${ENDPOINTS.generateBiGrid3D}?${query}`;
+    const json = await postJson(url, body, {signal});
+
+    // Normalize names for the caller
+    return {
+        xmlString: json?.content ?? "",
+        resolutionFactor: json?.resolutionFactor ?? 1,
+        raw: json,
+    };
+}
+
+/**
  * Connects to the CDO service and returns either text (xml/protobuf) or JSON.
  *
  * @param {Object} opts

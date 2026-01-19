@@ -90,7 +90,7 @@
 <!-- Sidebar UI (captures events so they don't reach the canvas) -->
 <aside id="sidebar" aria-label="Controls">
     <h2>XMI Upload<br/><small>(Offline)</small></h2>
-    <div class="panel">
+    <div class="panel" id="xmiUploadPanel">
         <div class="row">
             <label for="xmiMode">Mode</label>
             <select id="xmiMode" style="width:145px;">
@@ -105,7 +105,7 @@
     </div>
 
     <h2>Samples<br/><small>(Offline)</small></h2>
-    <div class="panel">
+    <div class="panel" id="samplesPanel">
         <button id="fetchSampleModel_A" class="btn" data-stepsize="0.25">Home XRPALS 25cm</button>
         <button id="fetchSampleModel_B" class="btn" data-stepsize="0.5">Home XRPALS 50cm</button>
         <button id="fetchSampleModel_0" class="btn" data-stepsize="1.0">CF-Swarmwalker</button>
@@ -135,11 +135,27 @@
             <span id="droneRangeText">cf231</span>
         </div>
 
+        <div class="row">
+            <label for="droneDisplayMode">Display Mode</label>
+            <select id="droneDisplayMode" style="width:145px;">
+                <option value="cube">Cube</option>
+                <option value="drone">Drone Model</option>
+            </select>
+        </div>
+
         <div id="agentButtons"></div>
     </div>
 
     <h2>Grid<br/><small>(Bigrid-Provider-Service)</small></h2>
     <div class="panel">
+        <div class="row">
+            <label for="gridMode">Mode</label>
+            <select id="gridMode" style="width:145px;">
+                <option value="2d">2D</option>
+                <option value="3d">3D</option>
+            </select>
+        </div>
+        
         <div class="row">
             <label for="rowsSlider">Rows</label>
             <span id="rowsValue">5</span>
@@ -154,15 +170,27 @@
 
         <div class="row">
             <label for="stepXSlider">Step X</label>
-            <span id="stepXValue">0.5</span>
+            <span id="stepXValue">1</span>
         </div>
-        <input id="stepXSlider" type="range" min="0.1" max="2" step="0.1" value="0.5" />
+        <input id="stepXSlider" type="range" min="0.1" max="2" step="0.1" value="1" />
 
         <div class="row">
             <label for="stepYSlider">Step Y</label>
-            <span id="stepYValue">0.5</span>
+            <span id="stepYValue">1</span>
         </div>
-        <input id="stepYSlider" type="range" min="0.1" max="2" step="0.1" value="0.5" />
+        <input id="stepYSlider" type="range" min="0.1" max="2" step="0.1" value="1" />
+
+        <div class="row" id="layersRow" style="display:none;">
+            <label for="layersSlider">Layers</label>
+            <span id="layersValue">3</span>
+        </div>
+        <input id="layersSlider" type="range" min="1" max="10" step="1" value="3" style="display:none;" />
+
+        <div class="row" id="layerHeightRow" style="display:none;">
+            <label for="layerHeightSlider">Layer Height</label>
+            <span id="layerHeightValue">0.35</span>
+        </div>
+        <input id="layerHeightSlider" type="range" min="0.1" max="5" step="0.01" value="0.35" style="display:none;" />
 
         <div class="row">
             <button id="fetchServiceAPI" class="btn" data-stepsize="0.25" style="margin-top:8px;">Call Service</button>
@@ -231,6 +259,13 @@
         const rosHostRow = document.getElementById('rosHostRow');
         const agentSlider = document.getElementById('agentSlider');
         const droneRangeText = document.getElementById('droneRangeText');
+        const gridModeSelect = document.getElementById('gridMode');
+        const layersRow = document.getElementById('layersRow');
+        const layersSlider = document.getElementById('layersSlider');
+        const layerHeightRow = document.getElementById('layerHeightRow');
+        const layerHeightSlider = document.getElementById('layerHeightSlider');
+        const xmiUploadPanel = document.getElementById('xmiUploadPanel');
+        const samplesPanel = document.getElementById('samplesPanel');
         
         function updateModeUI() {
             const mode = connectionModeSelect.value;
@@ -240,6 +275,29 @@
                 rosHostRow.style.display = 'none';
             }
             updateDroneRangeText();
+        }
+        
+        function updateGridModeUI() {
+            const gridMode = gridModeSelect.value;
+            if (gridMode === '3d') {
+                layersRow.style.display = 'grid';
+                layersSlider.style.display = 'block';
+                layerHeightRow.style.display = 'grid';
+                layerHeightSlider.style.display = 'block';
+                xmiUploadPanel.style.opacity = '0.5';
+                xmiUploadPanel.style.pointerEvents = 'none';
+                samplesPanel.style.opacity = '0.5';
+                samplesPanel.style.pointerEvents = 'none';
+            } else {
+                layersRow.style.display = 'none';
+                layersSlider.style.display = 'none';
+                layerHeightRow.style.display = 'none';
+                layerHeightSlider.style.display = 'none';
+                xmiUploadPanel.style.opacity = '1';
+                xmiUploadPanel.style.pointerEvents = 'auto';
+                samplesPanel.style.opacity = '1';
+                samplesPanel.style.pointerEvents = 'auto';
+            }
         }
         
         function updateDroneRangeText() {
@@ -258,8 +316,24 @@
         if (agentSlider) {
             agentSlider.addEventListener('input', updateDroneRangeText);
         }
+        if (gridModeSelect) {
+            gridModeSelect.addEventListener('change', updateGridModeUI);
+        }
+        if (layersSlider) {
+            layersSlider.addEventListener('input', () => {
+                document.getElementById('layersValue').textContent = layersSlider.value;
+            });
+        }
+        if (layerHeightSlider) {
+            layerHeightSlider.addEventListener('input', () => {
+                // Display with 2 decimal places
+                const value = parseFloat(layerHeightSlider.value);
+                document.getElementById('layerHeightValue').textContent = value.toFixed(2);
+            });
+        }
         
         updateModeUI();
+        updateGridModeUI();
     });
 </script>
 

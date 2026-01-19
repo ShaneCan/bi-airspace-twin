@@ -16,25 +16,72 @@ export class BlockWorld {
     }
 
     //first version
-    setBlock(x, y, z, size, material) {
+    setBlock(x, y, z, size, material, is3D = false, layerHeight = 1.0) {
         const key = this._key(x, y, z);
-        if (this.blocks.has(key)) return; // already exists
+        if (this.blocks.has(key)) {
+            console.warn(`Skipping duplicate block at (${x}, ${y}, ${z})`);
+            return; // already exists
+        }
 
-        const geometry = new THREE.BoxGeometry(size, size, size/4);
-        const mesh = new THREE.Mesh(geometry, material);
-        mesh.position.set(x, y, z);
-        // this.scene.add(mesh);
-        this.world.add(mesh);
+        let mesh;
+        if (is3D) {
+            // 3D mode: Create transparent cube with colored edges
+            const geometry = new THREE.BoxGeometry(size, size, layerHeight);
+            
+            // Create transparent material
+            const transparentMaterial = new THREE.MeshBasicMaterial({
+                color: material.color || 0x00ff00,
+                transparent: true,
+                opacity: 0.1,
+                side: THREE.DoubleSide
+            });
+            
+            mesh = new THREE.Mesh(geometry, transparentMaterial);
+            // Position cube so its bottom is at z coordinate (center is at z + layerHeight/2)
+            mesh.position.set(x, y, z + layerHeight / 2);
+            this.world.add(mesh);
+            
+            // Add wireframe edges
+            const edges = new THREE.EdgesGeometry(geometry);
+            const edgeMaterial = new THREE.LineBasicMaterial({
+                color: material.color || 0x00ff00,
+                linewidth: 2
+            });
+            const wireframe = new THREE.LineSegments(edges, edgeMaterial);
+            mesh.add(wireframe);
+            
+            // Store wireframe reference for cleanup
+            mesh.userData.wireframe = wireframe;
+        } else {
+            // 2D mode: Original flat block
+            const geometry = new THREE.BoxGeometry(size, size, size/4);
+            mesh = new THREE.Mesh(geometry, material);
+            mesh.position.set(x, y, z);
+            this.world.add(mesh);
+        }
 
+        // Create coordinate label
         if(true) {
-            const coordLbl = mesh.position.clone();
-            coordLbl.z += size/2 + 0.125;
-            const label = this.createTextLabel(`${coordLbl.x}, ${coordLbl.y}`, coordLbl, 14);
-            this.world.add(label);
+            if (is3D) {
+                // Place label slightly above the cube bottom to avoid z-fighting, and always render in front
+                const coordLbl = new THREE.Vector3(x, y, z + 0.01);
+                const label = this.createTextLabel(
+                    `${x}, ${y}, ${z}`,
+                    coordLbl,
+                    14,
+                    { depthTest: false, depthWrite: false, renderOrder: 999 }
+                );
+                this.world.add(label);
+            } else {
+                const coordLbl = mesh.position.clone();
+                coordLbl.z += size/2 + 0.125;
+                const label = this.createTextLabel(`${coordLbl.x}, ${coordLbl.y}`, coordLbl, 14);
+                this.world.add(label);
+            }
         }
 
         // Add a timer state to the block (increasing over time)
-        this.blocks.set(key, { mesh, timer: 0 });
+        this.blocks.set(key, { mesh, timer: 0, is3D });
     }
 
 
@@ -42,6 +89,12 @@ export class BlockWorld {
         const key = this._key(x, y, z);
         const block = this.blocks.get(key);
         if (block) {
+            // Clean up wireframe if exists
+            if (block.mesh.userData.wireframe) {
+                block.mesh.remove(block.mesh.userData.wireframe);
+                block.mesh.userData.wireframe.geometry.dispose();
+                block.mesh.userData.wireframe.material.dispose();
+            }
             // this.scene.remove(block.mesh);
             this.world.remove(block.mesh);
             this.blocks.delete(key);
@@ -70,13 +123,22 @@ export class BlockWorld {
             block.timer += 0.01; // increment timer
             if (block.timer > 4) block.timer = 0; // reset after 2 seconds
 
-            // Change block color based on timer
-            const color = new THREE.Color(0x00ee00).lerp(new THREE.Color(0x00bb00), Math.sin(block.timer * Math.PI/2));
-            block.mesh.material.color.set(color);
+            // Change block color based on timer (only for 2D blocks, 3D blocks keep wireframe color)
+            if (!block.is3D) {
+                const color = new THREE.Color(0x00ee00).lerp(new THREE.Color(0x00bb00), Math.sin(block.timer * Math.PI/2));
+                block.mesh.material.color.set(color);
+            } else {
+                // Update wireframe color for 3D blocks
+                if (block.mesh.userData.wireframe) {
+                    const color = new THREE.Color(0x00ee00).lerp(new THREE.Color(0x00bb00), Math.sin(block.timer * Math.PI/2));
+                    block.mesh.userData.wireframe.material.color.set(color);
+                }
+            }
         }
     }
 
-    createTextLabel(text, position, fontSize = 28) {
+    createTextLabel(text, position, fontSize = 28, options = {}) {
+        const { depthTest = true, depthWrite = true, renderOrder = 0 } = options;
         // Create canvas to draw text
         const canvas = document.createElement('canvas');
         const context = canvas.getContext('2d');
@@ -98,8 +160,14 @@ export class BlockWorld {
         texture.needsUpdate = true;
 
         // Create sprite
-        const material = new THREE.SpriteMaterial({ map: texture, transparent: true });
+        const material = new THREE.SpriteMaterial({
+            map: texture,
+            transparent: true,
+            depthTest,
+            depthWrite,
+        });
         const sprite = new THREE.Sprite(material);
+        sprite.renderOrder = renderOrder;
 
         // Scale and position sprite
         const scale = 1;
