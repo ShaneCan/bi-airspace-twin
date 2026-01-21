@@ -34,6 +34,20 @@ let rosUnsubscribeFunctions = [];
 let gridMode = "2d"; // "2d" or "3d"
 let droneDisplayMode = "cube"; // "cube" or "drone"
 
+// Current grid configuration, used for mapping drone position to grid cell
+let gridConfig = {
+    rows: DEFAULT_GRID.rows,
+    cols: DEFAULT_GRID.cols,
+    stepX: DEFAULT_GRID.stepX,
+    stepY: DEFAULT_GRID.stepY,
+    layers: 1,
+    layerHeight: 1,
+    ready: false,
+};
+
+// Track which cell each drone currently occupies (for highlighting)
+let droneCellKeys = [];
+
 let rowsSlider, colsSlider, stepXSlider, stepYSlider;
 
 // Create a drone 3D model (quadcopter style)
@@ -183,24 +197,77 @@ function animate() {
 }
 
 function updateLiveBlockPosition([x, y, z], liveBlockIndex = 0) {
-    const scale = resolutionFactor;
-    
     if (!liveBlock || liveBlock.length <= liveBlockIndex) {
         console.warn(`liveBlock index ${liveBlockIndex} invalid, current length: ${liveBlock ? liveBlock.length : 0}`);
         return;
     }
     
-    if (!liveBlock[liveBlockIndex]) {
+    const droneObject = liveBlock[liveBlockIndex];
+    if (!droneObject) {
         console.warn(`liveBlock[${liveBlockIndex}] does not exist`);
         return;
     }
     
-    // Use z coordinate if in 3D mode, otherwise use default height
+    // Update drone position
     if (gridMode === "3d" && z !== undefined) {
-        liveBlock[liveBlockIndex].position.set(x, y, z);
+        droneObject.position.set(x, y, z);
     } else {
-        liveBlock[liveBlockIndex].position.set(x, y, 1.5);
+        droneObject.position.set(x, y, 1.5);
     }
+
+    // Highlight corresponding grid cell if grid is ready
+    if (!gridConfig || !gridConfig.ready) {
+        return;
+    }
+
+    // Map world coordinates (x,y,z) to grid cell center coordinates
+    const { rows, cols, stepX, stepY, layers, layerHeight } = gridConfig;
+
+    // Compute (unclamped) indices
+    const rowIdx = Math.round(x / stepX);
+    const colIdx = Math.round(y / stepY);
+    const layerIdx = gridMode === "3d" && layerHeight > 0 && z !== undefined
+        ? Math.round(z / layerHeight)
+        : 0;
+
+    const prevCellKey = droneCellKeys[liveBlockIndex];
+
+    // If out of bounds, treat as leaving the grid: unhighlight previous cell and return
+    const outOfBounds =
+        rowIdx < 0 || rowIdx >= rows ||
+        colIdx < 0 || colIdx >= cols ||
+        layerIdx < 0 || layerIdx >= layers;
+
+    if (outOfBounds) {
+        if (prevCellKey) {
+            const [px, py, pz] = prevCellKey.split(',').map(Number);
+            blockWorld.unhighlightCellAt(px, py, pz);
+            droneCellKeys[liveBlockIndex] = null;
+        }
+        return;
+    }
+
+    // Convert indices back to cell center coordinates (matching how blocks were created)
+    const cellX = rowIdx * stepX;
+    const cellY = colIdx * stepY;
+    const cellZ = layerIdx * (gridMode === "3d" ? layerHeight : 0);
+
+    const newCellKey = `${cellX},${cellY},${cellZ}`;
+
+    // If cell hasn't changed, nothing to do
+    if (prevCellKey === newCellKey) {
+        return;
+    }
+
+    // Unhighlight previous cell
+    if (prevCellKey) {
+        const [px, py, pz] = prevCellKey.split(',').map(Number);
+        blockWorld.unhighlightCellAt(px, py, pz);
+    }
+
+    // Highlight new cell
+    blockWorld.highlightCellAt(cellX, cellY, cellZ);
+    droneCellKeys[liveBlockIndex] = newCellKey;
 }
 
 function bindSlider(id, valueId) {
@@ -264,6 +331,17 @@ async function fetchGridAndRender(rows = 3, cols = 3, stepSizeX = 1.0, stepSizeY
         stepY: stepSizeY,
     });
 
+    // Update grid configuration
+    gridConfig = {
+        rows,
+        cols,
+        stepX: stepSizeX,
+        stepY: stepSizeY,
+        layers: 1,
+        layerHeight: 1,
+        ready: true,
+    };
+
     // 2) Parse XML
     const {cells, linkMap} = parseBigraphXML_singleBRoot(xmlString, true);
 
@@ -289,6 +367,17 @@ async function fetchGridAndRender3D(rows = 3, cols = 3, layers = 3, stepSizeX = 
         stepY: stepSizeY,
         layerHeight: layerHeight,
     });
+
+    // Update grid configuration for 3D grid
+    gridConfig = {
+        rows,
+        cols,
+        stepX: stepSizeX,
+        stepY: stepSizeY,
+        layers,
+        layerHeight,
+        ready: true,
+    };
 
     // 2) Parse XML
     const {cells, linkMap} = parseBigraphXML_singleBRoot(xmlString, true);
@@ -693,11 +782,22 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     function renderAgentButtons(count) {
+        // Clean up any existing connections
         disconnectAllWebSockets();
         disconnectAllRosConnections();
         rosUnsubscribeFunctions.forEach(unsub => unsub());
         rosUnsubscribeFunctions = [];
-        
+
+        // Unhighlight all cells currently occupied by drones
+        if (Array.isArray(droneCellKeys)) {
+            for (const key of droneCellKeys) {
+                if (!key) continue;
+                const [x, y, z] = key.split(',').map(Number);
+                blockWorld.unhighlightCellAt(x, y, z);
+            }
+        }
+        droneCellKeys = [];
+
         buttonContainer.innerHTML = "";
 
         if (connectionMode === "websocket") {
@@ -738,6 +838,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         numOfLiveBlocks = count;
+        // Reset drone cell tracking when number of drones changes
+        droneCellKeys = new Array(count).fill(null);
         initLiveBlock(resolutionFactor, numOfLiveBlocks);
     }
 });

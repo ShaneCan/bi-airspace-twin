@@ -80,8 +80,17 @@ export class BlockWorld {
             }
         }
 
-        // Add a timer state to the block (increasing over time)
-        this.blocks.set(key, { mesh, timer: 0, is3D });
+        // Add a timer state to the block (increasing over time), plus highlight state
+        const baseColor = mesh.material && mesh.material.color
+            ? mesh.material.color.clone()
+            : new THREE.Color(0xffffff);
+        this.blocks.set(key, {
+            mesh,
+            timer: 0,
+            is3D,
+            baseColor,
+            highlightCount: 0
+        });
     }
 
 
@@ -111,7 +120,7 @@ export class BlockWorld {
         this.blocks.clear();
     }
 
-    update() {
+        update() {
         // Loop through blocks and update their timers/material
         for (let [key, block] of this.blocks) {
 
@@ -123,16 +132,100 @@ export class BlockWorld {
             block.timer += 0.01; // increment timer
             if (block.timer > 4) block.timer = 0; // reset after 2 seconds
 
+            // If highlighted, keep highlight color and skip animation
+            if (block.highlightCount && block.highlightCount > 0) {
+                continue;
+            }
+
             // Change block color based on timer (only for 2D blocks, 3D blocks keep wireframe color)
             if (!block.is3D) {
-                const color = new THREE.Color(0x00ee00).lerp(new THREE.Color(0x00bb00), Math.sin(block.timer * Math.PI/2));
-                block.mesh.material.color.set(color);
+                const color = new THREE.Color(0x00ee00).lerp(
+                    new THREE.Color(0x00bb00),
+                    Math.sin(block.timer * Math.PI/2)
+                );
+                if (block.mesh.material && block.mesh.material.color) {
+                    block.mesh.material.color.set(color);
+                }
             } else {
                 // Update wireframe color for 3D blocks
-                if (block.mesh.userData.wireframe) {
-                    const color = new THREE.Color(0x00ee00).lerp(new THREE.Color(0x00bb00), Math.sin(block.timer * Math.PI/2));
+                if (block.mesh.userData.wireframe && block.mesh.userData.wireframe.material) {
+                    const color = new THREE.Color(0x00ee00).lerp(
+                        new THREE.Color(0x00bb00),
+                        Math.sin(block.timer * Math.PI/2)
+                    );
                     block.mesh.userData.wireframe.material.color.set(color);
                 }
+            }
+        }
+    }
+
+    /**
+     * Highlight a cell at the given world coordinates (x,y,z).
+     * If multiple drones occupy the same cell, we keep a reference count.
+     */
+    highlightCellAt(x, y, z) {
+        const key = this._key(x, y, z);
+        const block = this.blocks.get(key);
+        if (!block) return;
+
+        block.highlightCount = (block.highlightCount || 0) + 1;
+
+        // Choose color based on number of drones in this cell:
+        // 1 drone -> gold, 2 or more -> red
+        const color =
+            block.highlightCount === 1
+                ? new THREE.Color(0xffd700) // gold
+                : new THREE.Color(0xff0000); // red
+
+        if (block.mesh.material && block.mesh.material.color) {
+            block.mesh.material.color.set(color);
+        }
+        if (block.mesh.userData.wireframe && block.mesh.userData.wireframe.material) {
+            block.mesh.userData.wireframe.material.color.set(color);
+        }
+    }
+
+    /**
+     * Remove highlight from a cell. Only resets when reference count drops to zero.
+     */
+    unhighlightCellAt(x, y, z) {
+        const key = this._key(x, y, z);
+        const block = this.blocks.get(key);
+        if (!block) return;
+
+        if (!block.highlightCount || block.highlightCount <= 0) {
+            block.highlightCount = 0;
+            return;
+        }
+
+        block.highlightCount -= 1;
+
+        // After decrement, choose appropriate color
+        if (block.highlightCount === 0) {
+            // Restore base color
+            if (block.mesh.material && block.mesh.material.color && block.baseColor) {
+                block.mesh.material.color.copy(block.baseColor);
+            }
+            if (block.mesh.userData.wireframe && block.mesh.userData.wireframe.material && block.baseColor) {
+                block.mesh.userData.wireframe.material.color.copy(block.baseColor);
+            }
+        } else if (block.highlightCount === 1) {
+            // Back to single-drone: gold
+            const color = new THREE.Color(0xffd700);
+            if (block.mesh.material && block.mesh.material.color) {
+                block.mesh.material.color.set(color);
+            }
+            if (block.mesh.userData.wireframe && block.mesh.userData.wireframe.material) {
+                block.mesh.userData.wireframe.material.color.set(color);
+            }
+        } else {
+            // Still multi-drone: red
+            const color = new THREE.Color(0xff0000);
+            if (block.mesh.material && block.mesh.material.color) {
+                block.mesh.material.color.set(color);
+            }
+            if (block.mesh.userData.wireframe && block.mesh.userData.wireframe.material) {
+                block.mesh.userData.wireframe.material.color.set(color);
             }
         }
     }
