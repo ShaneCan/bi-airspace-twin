@@ -7,8 +7,14 @@ export class BlockWorld {
         this.blocks = new Map(); // key: "x,y,z", value: { mesh, timer }
     }
 
+    /** Round to fixed decimals so grid cell keys match across lookups (avoids float mismatch). */
+    _roundCoord(v, decimals = 6) {
+        const f = Math.pow(10, decimals);
+        return Math.round(v * f) / f;
+    }
+
     _key(x, y, z) {
-        return `${x},${y},${z}`;
+        return `${this._roundCoord(x)},${this._roundCoord(y)},${this._roundCoord(z)}`;
     }
     _materialKey(material) {
         // Assumes you're identifying materials by their color

@@ -42,9 +42,9 @@ export async function fetchGrid3D({
                                     rows = 3,
                                     cols = 3,
                                     layers = 3,
-                                    stepX = 1.0,
-                                    stepY = 1.0,
-                                    layerHeight = 2.0,
+                                    stepX = 0.5,
+                                    stepY = 0.5,
+                                    layerHeight = 0.35,
                                     format = FORMATS.xml,
                                     signal,
                                 }) {
@@ -53,8 +53,8 @@ export async function fetchGrid3D({
 
     // POST body (server expects step sizes, layer height and origin)
     const body = {
-        x: 0,
-        y: 0,
+        x: -1.0,
+        y: -1.0,
         z: 0,
         stepSizeX: stepX,
         stepSizeY: stepY,

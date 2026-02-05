@@ -42,11 +42,18 @@ let gridConfig = {
     stepY: DEFAULT_GRID.stepY,
     layers: 1,
     layerHeight: 1,
+    originX: 0,
+    originY: 0,
+    originZ: 0,
     ready: false,
 };
 
 // Track which cell each drone currently occupies (for highlighting)
 let droneCellKeys = [];
+
+// Drone ID label sprites above each drone (cf231, cf232, ...)
+const DRONE_CF_START = 231;
+let liveBlockLabels = [];
 
 let rowsSlider, colsSlider, stepXSlider, stepYSlider;
 
@@ -120,9 +127,18 @@ function createDroneModel(size, color) {
 // Add a sample block
 
 function initLiveBlock(resolutionFactor, numOfBlocks = 4) {
-    // clear previous blocks if re-initializing
+    // clear previous blocks and labels if re-initializing
     liveBlock.forEach(block => world.remove(block));
     liveBlock = [];
+
+    liveBlockLabels.forEach((sprite) => {
+        world.remove(sprite);
+        if (sprite.material && sprite.material.map) sprite.material.map.dispose();
+        if (sprite.material) sprite.material.dispose();
+    });
+    liveBlockLabels = [];
+
+    const labelOffset = 0.35; // height above drone in world Z
 
     for (let i = 0; i < numOfBlocks; i++) {
         const color = new THREE.Color().setHSL((0.6 + i * 0.1) % 1.0, 1.0, 0.5);
@@ -152,6 +168,17 @@ function initLiveBlock(resolutionFactor, numOfBlocks = 4) {
 
         world.add(droneObject);
         liveBlock.push(droneObject);
+
+        // Label above drone: cf231, cf232, ...
+        const cfId = `cf${DRONE_CF_START + i}`;
+        const labelPos = new THREE.Vector3(0, 0, 1.5 + labelOffset);
+        const label = blockWorld.createTextLabel(cfId, labelPos, 16, {
+            depthTest: false,
+            depthWrite: false,
+            renderOrder: 999
+        });
+        world.add(label);
+        liveBlockLabels.push(label);
     }
 }
 
@@ -209,10 +236,13 @@ function updateLiveBlockPosition([x, y, z], liveBlockIndex = 0) {
     }
     
     // Update drone position
-    if (gridMode === "3d" && z !== undefined) {
-        droneObject.position.set(x, y, z);
-    } else {
-        droneObject.position.set(x, y, 1.5);
+    const zPos = (gridMode === "3d" && z !== undefined) ? z : 1.5;
+    droneObject.position.set(x, y, zPos);
+
+    // Update label above this drone
+    const labelOffset = 0.35;
+    if (liveBlockLabels[liveBlockIndex]) {
+        liveBlockLabels[liveBlockIndex].position.set(x, y, zPos + labelOffset);
     }
 
     // Highlight corresponding grid cell if grid is ready
@@ -220,14 +250,14 @@ function updateLiveBlockPosition([x, y, z], liveBlockIndex = 0) {
         return;
     }
 
-    // Map world coordinates (x,y,z) to grid cell center coordinates
-    const { rows, cols, stepX, stepY, layers, layerHeight } = gridConfig;
+    // Map world coordinates (x,y,z) to grid cell center coordinates (support any origin)
+    const { rows, cols, stepX, stepY, layers, layerHeight, originX = 0, originY = 0, originZ = 0 } = gridConfig;
 
-    // Compute (unclamped) indices
-    const rowIdx = Math.round(x / stepX);
-    const colIdx = Math.round(y / stepY);
+    // Compute (unclamped) indices relative to grid origin
+    const rowIdx = Math.round((x - originX) / stepX);
+    const colIdx = Math.round((y - originY) / stepY);
     const layerIdx = gridMode === "3d" && layerHeight > 0 && z !== undefined
-        ? Math.round(z / layerHeight)
+        ? Math.round((z - originZ) / layerHeight)
         : 0;
 
     const prevCellKey = droneCellKeys[liveBlockIndex];
@@ -247,10 +277,12 @@ function updateLiveBlockPosition([x, y, z], liveBlockIndex = 0) {
         return;
     }
 
-    // Convert indices back to cell center coordinates (matching how blocks were created)
-    const cellX = rowIdx * stepX;
-    const cellY = colIdx * stepY;
-    const cellZ = layerIdx * (gridMode === "3d" ? layerHeight : 0);
+    // Convert indices back to cell center coordinates (matching how blocks were created).
+    // Round to avoid floating-point key mismatch with BlockWorld.blocks.
+    const roundGrid = (v, d = 6) => Math.round(v * Math.pow(10, d)) / Math.pow(10, d);
+    const cellX = roundGrid(originX + rowIdx * stepX);
+    const cellY = roundGrid(originY + colIdx * stepY);
+    const cellZ = roundGrid(originZ + layerIdx * (gridMode === "3d" ? layerHeight : 0));
 
     const newCellKey = `${cellX},${cellY},${cellZ}`;
 
@@ -345,6 +377,16 @@ async function fetchGridAndRender(rows = 3, cols = 3, stepSizeX = 1.0, stepSizeY
     // 2) Parse XML
     const {cells, linkMap} = parseBigraphXML_singleBRoot(xmlString, true);
 
+    // Infer grid origin from parsed cell coordinates
+    let originX = 0, originY = 0;
+    if (cells.length > 0) {
+        originX = Math.min(...cells.map(c => c.point.x));
+        originY = Math.min(...cells.map(c => c.point.y));
+    }
+    gridConfig.originX = originX;
+    gridConfig.originY = originY;
+    gridConfig.originZ = 0;
+
     // 3) Map roots → 3D blocks
     blockWorld.clearAll();
     initLiveBlock(resolutionFactor, numOfLiveBlocks);
@@ -376,11 +418,24 @@ async function fetchGridAndRender3D(rows = 3, cols = 3, layers = 3, stepSizeX = 
         stepY: stepSizeY,
         layers,
         layerHeight,
+        originX: 0,
+        originY: 0,
+        originZ: 0,
         ready: true,
     };
 
     // 2) Parse XML
     const {cells, linkMap} = parseBigraphXML_singleBRoot(xmlString, true);
+
+    // Infer grid origin from parsed cell coordinates
+    if (cells.length > 0) {
+        const xs = cells.map(c => c.point.x).filter(v => v !== undefined);
+        const ys = cells.map(c => c.point.y).filter(v => v !== undefined);
+        const zs = cells.map(c => c.point.z).filter(v => v !== undefined);
+        if (xs.length) gridConfig.originX = Math.min(...xs);
+        if (ys.length) gridConfig.originY = Math.min(...ys);
+        if (zs.length) gridConfig.originZ = Math.min(...zs);
+    }
 
     // 3) Map roots → 3D cubes
     blockWorld.clearAll();

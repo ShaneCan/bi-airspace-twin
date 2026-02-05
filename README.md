@@ -1,18 +1,18 @@
-# Bi-Space Viewer
+# Bi-Airspace Twin
 
 A web-based viewer for **bigrids** (bi-spatial structures).
-It provides an interactive 3D environment for exploring and debugging bigrid models.
+It provides an interactive 3D environment for exploring bigrid based airspace.
 
 ### Features
 
-- **Bigrid Generation**
+- **2D/3D Bigrid Generation**
     - Load sample models
     - Upload custom XMI files
     - Generate grids via the `bigrid-provider-service`
     - Fetch from a CDO repository
 
 - **Live Monitoring**
-    - Visualize simulated or physical Crazyflie drone positions as a colored block
+    - Visualize simulated or physical Crazyflie drone positions as a colored drone
       (via [
       `cf.PyControl` WebSocket integration](https://github.com/UniAgent-CyberPhysicalAssets/cps.asset.crazyflie/tree/main/controller/cf.PyControl))
 
@@ -21,7 +21,7 @@ It provides an interactive 3D environment for exploring and debugging bigrid mod
 
 **Screenshots**
 
-|<img src="docs/screenshot-ide-1.png" width="300"/>|<img src="docs/screenshot-webview-2.gif" width="250"/>|
+|<img src="docs/screenshot-1.png" width="300"/>|<img src="docs/screenshot-2.png" width="300"/>|
 |-|-|
 
 
@@ -79,24 +79,3 @@ is very simple and their [usage](https://uniagent-cyberphysicalassets.github.io/
 as well.
 The file parsing logic lives in
 [`BigraphGridXMLParser.js`](src/BigraphGridXMLParser.js).
-
-## Dev-Notes
-
-- The renderer supports two bigrid encodings:
-    - **Single-root (1)**: all `Locale` elements share a single root.
-    - **Multi-root (0)**: each `Locale` is attached to its own root.
-    - Moreover, the coordinates can be encoded as "outer names" or as dedicated "CO-typed nodes" (coordinate nodes).
-- The XMI parsing logic lives in
-  [`BigraphGridXMLParser.js`](src/BigraphGridXMLParser.js).  
-  It is self-contained and can be ported to other languages that need to read the same bigrid format (XMI).
-- In the UI the appropriate parser is selected by passing the desired
-  `version` to `fetchSampleAndRender(filename, version = 0 | 1)`.
-
-## License
-
-This Open Source software is released under the Apache 2.0 license.
-
----
-
-Copyright © 2025 The UniAgent Developers and Contributors. <br/>
-(Main Developer: Dominik Grzelak)
