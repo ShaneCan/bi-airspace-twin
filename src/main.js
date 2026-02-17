@@ -1,12 +1,11 @@
 import {ENDPOINTS, FORMATS, DEFAULT_GRID} from "./config.js";
 import {BlockWorld} from './BlockWorld.js';
-import {parseBigraphXML, parseBigraphXML_singleBRoot} from './BigraphGridXMLParser.js';
+import {parseBigraphXML_singleBRoot} from './BigraphGridXMLParser.js';
 import {fetchCdoModel, fetchGrid, fetchGrid3D} from "./services.js";
 
 import * as THREE from 'three';
 import {createScene} from "./scene.js";
-import {connectWebSocket, disconnectAllWebSockets} from "./websocket.js";
-import {subscribeMultipleDrones, disconnectAllRosConnections} from "./ros2.js";
+import {subscribeMultipleDrones, subscribeSimulation, disconnectAllRosConnections} from "./ros2.js";
 
 const {scene, camera, renderer, controls} = createScene();
 
@@ -29,10 +28,9 @@ const grassMaterial = new THREE.MeshStandardMaterial({color: 0x00ff00});
 let resolutionFactor = 0.2;
 let liveBlock = [];
 let numOfLiveBlocks = 4;
-let connectionMode = "websocket";
 let rosUnsubscribeFunctions = [];
 let gridMode = "2d"; // "2d" or "3d"
-let droneDisplayMode = "cube"; // "cube" or "drone"
+let simulationMode = false;
 
 // Current grid configuration, used for mapping drone position to grid cell
 let gridConfig = {
@@ -142,26 +140,8 @@ function initLiveBlock(resolutionFactor, numOfBlocks = 4) {
 
     for (let i = 0; i < numOfBlocks; i++) {
         const color = new THREE.Color().setHSL((0.6 + i * 0.1) % 1.0, 1.0, 0.5);
-        
-        let droneObject;
-        
-        if (droneDisplayMode === "drone") {
-            // Create drone model
-            const droneSize = 0.8 * resolutionFactor;
-            droneObject = createDroneModel(droneSize, color);
-        } else {
-            // Create cube
-            const liveBlockMaterial = new THREE.MeshStandardMaterial({color});
-            const droneSize = 0.8 * resolutionFactor;
-            droneObject = new THREE.Mesh(
-                new THREE.BoxGeometry(
-                    droneSize,
-                    droneSize,
-                    droneSize
-                ),
-                liveBlockMaterial
-            );
-        }
+        const droneSize = 0.8 * resolutionFactor;
+        const droneObject = createDroneModel(droneSize, color);
 
         // Example placement: offset each block in x-direction
         droneObject.position.set(0, 0, 1.5);
@@ -309,47 +289,6 @@ function bindSlider(id, valueId) {
         valueEl.textContent = slider.value;
     });
     return slider;
-}
-
-async function fetchSampleAndRender(filename, version = 0) {
-    console.log("Loading sample " + filename + " ...");
-    fetch(filename)
-        .then(response => {
-            if (!response.ok) {
-                throw new Error(`HTTP error! Status: ${response.status}`);
-            }
-            return response.text();
-        })
-        .then(xmlString => {
-            let parsed;
-            if (version === 1) {
-                // Use single-root parser
-                parsed = parseBigraphXML_singleBRoot(xmlString);
-            } else {
-                // Default: multi-root parser
-                parsed = parseBigraphXML(xmlString);
-            }
-
-            const {cells, linkMap} = parsed;
-
-            blockWorld.clearAll();
-            initLiveBlock(resolutionFactor, numOfLiveBlocks);
-
-            for (const cell of cells) {
-                // console.log(`Index: ${cell.index}, Locale: ${cell.locale}, Point: x=${cell.point.x}, y=${cell.point.y}`);
-                blockWorld.setBlock(
-                    cell.point.x,
-                    cell.point.y,
-                    1,
-                    resolutionFactor,
-                    grassMaterial,
-                    false
-                );
-            }
-        })
-        .catch(error => {
-            console.error("Failed to fetch or parse XML:", error);
-        });
 }
 
 async function fetchGridAndRender(rows = 3, cols = 3, stepSizeX = 1.0, stepSizeY = 1.0) {
@@ -570,17 +509,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const slider = document.getElementById("agentSlider");
     const valueLabel = document.getElementById("agentCountValue");
     const buttonContainer = document.getElementById("agentButtons");
-    const modeSelect = document.getElementById("connectionMode");
     const rosHostInput = document.getElementById("rosBridgeHost");
+    const simulationModeCheckbox = document.getElementById("simulationMode");
 
     rowsSlider = bindSlider('rowsSlider', 'rowsValue');
     colsSlider = bindSlider('colsSlider', 'colsValue');
     stepXSlider = bindSlider('stepXSlider', 'stepXValue');
     stepYSlider = bindSlider('stepYSlider', 'stepYValue');
-
-    connectionMode = modeSelect.value;
     
-    // Track grid mode
     const gridModeSelect = document.getElementById("gridMode");
     if (gridModeSelect) {
         gridMode = gridModeSelect.value;
@@ -589,29 +525,18 @@ document.addEventListener('DOMContentLoaded', () => {
             console.log(`Grid mode switched: ${gridMode}`);
         });
     }
-    
-    // Track drone display mode
-    const droneDisplayModeSelect = document.getElementById("droneDisplayMode");
-    if (droneDisplayModeSelect) {
-        droneDisplayMode = droneDisplayModeSelect.value;
-        droneDisplayModeSelect.addEventListener("change", (e) => {
-            droneDisplayMode = e.target.value;
-            console.log(`Drone display mode switched: ${droneDisplayMode}`);
-            // Reinitialize live blocks with new display mode
-            initLiveBlock(resolutionFactor, numOfLiveBlocks);
+
+    if (simulationModeCheckbox) {
+        simulationMode = simulationModeCheckbox.checked;
+        simulationModeCheckbox.addEventListener("change", (e) => {
+            simulationMode = e.target.checked;
+            console.log(`Simulation mode: ${simulationMode}`);
+            renderAgentButtons(+slider.value);
         });
     }
 
-    modeSelect.addEventListener("change", (e) => {
-        connectionMode = e.target.value;
-        console.log(`Connection mode switched: ${connectionMode}`);
-        renderAgentButtons(+slider.value);
-    });
-
     rosHostInput.addEventListener("change", () => {
-        if (connectionMode === "ros2") {
-            renderAgentButtons(+slider.value);
-        }
+        renderAgentButtons(+slider.value);
     });
 
     // Initial render
@@ -638,89 +563,6 @@ document.addEventListener('DOMContentLoaded', () => {
         renderer.setSize(window.innerWidth, window.innerHeight);
     });
 
-
-    const uploadInput = document.getElementById("xmiUpload");
-    const uploadBtn = document.getElementById("uploadXmiBtn");
-    const xmiModeSelect = document.getElementById("xmiMode");
-
-    uploadBtn.addEventListener("click", async () => {
-        // Disable in 3D mode
-        if (gridMode === "3d") {
-            alert("XMI Upload is not available in 3D mode.");
-            return;
-        }
-        
-        const file = uploadInput.files?.[0];
-        if (!file) {
-            alert("Please select an XMI file first.");
-            return;
-        }
-
-        // You can load the file locally via Blob URL
-        const localUrl = URL.createObjectURL(file);
-        const mode = xmiModeSelect.value;
-
-        console.log(`Uploading XMI: ${file.name}, mode: ${mode}`);
-
-        try {
-            if (mode === "multi") {
-                await fetchSampleAndRender(localUrl, 0);
-            } else {
-                await fetchSampleAndRender(localUrl, 1);
-            }
-        } catch (err) {
-            console.error("Error rendering XMI:", err);
-        } finally {
-            // Free the blob URL when done
-            URL.revokeObjectURL(localUrl);
-        }
-    });
-
-
-    document.getElementById('fetchSampleModel_0').addEventListener('click', (event) => {
-        // Disable in 3D mode
-        if (gridMode === "3d") {
-            alert("Samples are not available in 3D mode.");
-            return;
-        }
-        
-        const stepSize = event.currentTarget.dataset.stepsize;
-        console.log("fetchSampleModel_0", stepSize);
-        resolutionFactor = stepSize;
-        fetchSampleAndRender('/cfswarmwalker_1.0f_singleRoot.xmi', 1).then(r => {
-            console.log("Finished.")
-        }); //single-root model file
-    });
-
-    document.getElementById('fetchSampleModel_A').addEventListener('click', (event) => {
-        // Disable in 3D mode
-        if (gridMode === "3d") {
-            alert("Samples are not available in 3D mode.");
-            return;
-        }
-        
-        const stepSize = event.currentTarget.dataset.stepsize;
-        console.log("fetchSampleModel_A", stepSize)
-        resolutionFactor = stepSize;
-        fetchSampleAndRender('/xrpals-home-0.25f.xmi').then(r => {
-            console.log("Finished.")
-        }); //multi-root model file
-    });
-
-    document.getElementById('fetchSampleModel_B').addEventListener('click', (event) => {
-        // Disable in 3D mode
-        if (gridMode === "3d") {
-            alert("Samples are not available in 3D mode.");
-            return;
-        }
-        
-        const stepSize = event.currentTarget.dataset.stepsize;
-        console.log("fetchSampleModel_B", stepSize)
-        resolutionFactor = stepSize;
-        fetchSampleAndRender('/xrpals-home-0.5f.xmi').then(r => {
-            console.log("Finished.")
-        }); //multi-root model file
-    });
 
     document.getElementById('fetchServiceAPI').addEventListener('click', () => {
         // Fetch Slider values
@@ -837,13 +679,10 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     function renderAgentButtons(count) {
-        // Clean up any existing connections
-        disconnectAllWebSockets();
         disconnectAllRosConnections();
         rosUnsubscribeFunctions.forEach(unsub => unsub());
         rosUnsubscribeFunctions = [];
 
-        // Unhighlight all cells currently occupied by drones
         if (Array.isArray(droneCellKeys)) {
             for (const key of droneCellKeys) {
                 if (!key) continue;
@@ -852,48 +691,34 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
         droneCellKeys = [];
-
         buttonContainer.innerHTML = "";
 
-        if (connectionMode === "websocket") {
-            for (let i = 0; i < count; i++) {
-                const btn = document.createElement("button");
-                const port = 8765 + i;
-                const url = `ws://localhost:${port}`;
+        const rosHost = document.getElementById("rosBridgeHost").value || "localhost:9090";
+        const simCheckbox = document.getElementById("simulationMode");
+        const useSimulation = simCheckbox ? simCheckbox.checked : false;
 
-                btn.className = "btn";
-                btn.id = `reconnectBtn_${i}`;
-                btn.textContent = `Reconnect ${url}`;
-
-                btn.addEventListener("click", () => {
-                    console.log(`Attempting to reconnect WebSocket: ${url}`);
-                    connectWebSocket(url, i, updateLiveBlockPosition);
-                });
-
-                buttonContainer.appendChild(btn);
-            }
-        } else {
-            const rosHost = document.getElementById("rosBridgeHost").value || "localhost:9090";
+        if (useSimulation) {
             const startCf = 231;
-            
-            console.log(`Connecting ROS2 mode: ${rosHost}, drone count: ${count}, cf${startCf} to cf${startCf + count - 1}`);
-            
-            const unsubscribeFuncs = subscribeMultipleDrones(rosHost, startCf, count, updateLiveBlockPosition);
-            rosUnsubscribeFunctions = unsubscribeFuncs;
-            
-            for (let i = 0; i < count; i++) {
-                const cfNumber = startCf + i;
-                const btn = document.createElement("button");
-                btn.className = "btn";
-                btn.id = `rosStatusBtn_${i}`;
-                btn.textContent = `cf${cfNumber} (ROS2)`;
-                btn.disabled = true;
-                buttonContainer.appendChild(btn);
-            }
+            console.log(`Simulation mode: subscribing to /cf_positions_path @ ${rosHost}, ${count} drones from cf${startCf}`);
+            const unsub = subscribeSimulation(rosHost, startCf, count, updateLiveBlockPosition);
+            rosUnsubscribeFunctions = [unsub];
+        } else {
+            const startCf = 231;
+            console.log(`ROS2: ${rosHost}, drone count: ${count}, cf${startCf} to cf${startCf + count - 1}`);
+            rosUnsubscribeFunctions = subscribeMultipleDrones(rosHost, startCf, count, updateLiveBlockPosition);
+        }
+
+        for (let i = 0; i < count; i++) {
+            const cfNumber = 231 + i;
+            const btn = document.createElement("button");
+            btn.className = "btn";
+            btn.id = `rosStatusBtn_${i}`;
+            btn.textContent = `cf${cfNumber} (ROS2)`;
+            btn.disabled = true;
+            buttonContainer.appendChild(btn);
         }
 
         numOfLiveBlocks = count;
-        // Reset drone cell tracking when number of drones changes
         droneCellKeys = new Array(count).fill(null);
         initLiveBlock(resolutionFactor, numOfLiveBlocks);
     }

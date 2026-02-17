@@ -89,41 +89,16 @@
 
 <!-- Sidebar UI (captures events so they don't reach the canvas) -->
 <aside id="sidebar" aria-label="Controls">
-    <h2>XMI Upload<br/><small>(Offline)</small></h2>
-    <div class="panel" id="xmiUploadPanel">
-        <div class="row">
-            <label for="xmiMode">Mode</label>
-            <select id="xmiMode" style="width:145px;">
-                <option value="single">Single Root</option>
-                <option value="multi">Multi Root</option>
-            </select>
-        </div>
-        <div class="row">
-            <input type="file" id="xmiUpload" accept=".xmi" style="width:100%;" />
-        </div>
-        <button id="uploadXmiBtn" class="btn" style="margin-top:8px;">Upload & Render</button>
-    </div>
-
-    <h2>Samples<br/><small>(Offline)</small></h2>
-    <div class="panel" id="samplesPanel">
-        <button id="fetchSampleModel_A" class="btn" data-stepsize="0.25">Home XRPALS 25cm</button>
-        <button id="fetchSampleModel_B" class="btn" data-stepsize="0.5">Home XRPALS 50cm</button>
-        <button id="fetchSampleModel_0" class="btn" data-stepsize="1.0">CF-Swarmwalker</button>
-    </div>
-
-    <h2><a href="https://github.com/UniAgent-CyberPhysicalAssets/cps.asset.crazyflie/tree/main/controller/cf.PyControl" target="_blank">Drone Connections</a><br/><small>(Real/Simulated)</small></h2>
+    <h2><a href="https://github.com/UniAgent-CyberPhysicalAssets/cps.asset.crazyflie/tree/main/controller/cf.PyControl" target="_blank">Drone Connections</a><br/><small>(ROS2)</small></h2>
     <div class="panel">
         <div class="row">
-            <label for="connectionMode">Connection Mode</label>
-            <select id="connectionMode" style="width:145px;">
-                <option value="websocket">WebSocket</option>
-                <option value="ros2">ROS2</option>
-            </select>
-        </div>
-        
-        <div class="row" id="rosHostRow" style="display:none;">
             <label for="rosBridgeHost">ROS Bridge</label>
             <input id="rosBridgeHost" type="text" value="localhost:9090" style="width:140px;" />
+        </div>
+
+        <div class="row">
+            <label for="simulationMode">Simulation mode</label>
+            <input id="simulationMode" type="checkbox" />
         </div>
         
         <div class="row">
@@ -135,18 +110,10 @@
             <span id="droneRangeText">cf231</span>
         </div>
 
-        <div class="row">
-            <label for="droneDisplayMode">Display Mode</label>
-            <select id="droneDisplayMode" style="width:145px;">
-                <option value="cube">Cube</option>
-                <option value="drone">Drone Model</option>
-            </select>
-        </div>
-
         <div id="agentButtons"></div>
     </div>
 
-    <h2>Grid<br/><small>(Bigrid-Provider-Service)</small></h2>
+    <h2>Grid-based Airspace<br/><small>(Bigrid-Provider-Service)</small></h2>
     <div class="panel">
         <div class="row">
             <label for="gridMode">Mode</label>
@@ -255,8 +222,6 @@
         // Optional: suppress context menu in sidebar too (otherwise omit this)
         sidebar.addEventListener('contextmenu', stopBubbleAndPrevent, { capture: false });
 
-        const connectionModeSelect = document.getElementById('connectionMode');
-        const rosHostRow = document.getElementById('rosHostRow');
         const agentSlider = document.getElementById('agentSlider');
         const droneRangeText = document.getElementById('droneRangeText');
         const gridModeSelect = document.getElementById('gridMode');
@@ -264,18 +229,6 @@
         const layersSlider = document.getElementById('layersSlider');
         const layerHeightRow = document.getElementById('layerHeightRow');
         const layerHeightSlider = document.getElementById('layerHeightSlider');
-        const xmiUploadPanel = document.getElementById('xmiUploadPanel');
-        const samplesPanel = document.getElementById('samplesPanel');
-        
-        function updateModeUI() {
-            const mode = connectionModeSelect.value;
-            if (mode === 'ros2') {
-                rosHostRow.style.display = 'grid';
-            } else {
-                rosHostRow.style.display = 'none';
-            }
-            updateDroneRangeText();
-        }
         
         function updateGridModeUI() {
             const gridMode = gridModeSelect.value;
@@ -284,19 +237,11 @@
                 layersSlider.style.display = 'block';
                 layerHeightRow.style.display = 'grid';
                 layerHeightSlider.style.display = 'block';
-                xmiUploadPanel.style.opacity = '0.5';
-                xmiUploadPanel.style.pointerEvents = 'none';
-                samplesPanel.style.opacity = '0.5';
-                samplesPanel.style.pointerEvents = 'none';
             } else {
                 layersRow.style.display = 'none';
                 layersSlider.style.display = 'none';
                 layerHeightRow.style.display = 'none';
                 layerHeightSlider.style.display = 'none';
-                xmiUploadPanel.style.opacity = '1';
-                xmiUploadPanel.style.pointerEvents = 'auto';
-                samplesPanel.style.opacity = '1';
-                samplesPanel.style.pointerEvents = 'auto';
             }
         }
         
@@ -310,9 +255,6 @@
             }
         }
         
-        if (connectionModeSelect) {
-            connectionModeSelect.addEventListener('change', updateModeUI);
-        }
         if (agentSlider) {
             agentSlider.addEventListener('input', updateDroneRangeText);
         }
@@ -326,14 +268,13 @@
         }
         if (layerHeightSlider) {
             layerHeightSlider.addEventListener('input', () => {
-                // Display with 2 decimal places
                 const value = parseFloat(layerHeightSlider.value);
                 document.getElementById('layerHeightValue').textContent = value.toFixed(2);
             });
         }
         
-        updateModeUI();
         updateGridModeUI();
+        updateDroneRangeText();
     });
 </script>
 

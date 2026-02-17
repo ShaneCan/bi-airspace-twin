@@ -281,11 +281,11 @@ export function disconnectAllRosConnections() {
 }
 
 /**
- * Subscribe to multiple drone ROS2 topics
+ * Subscribe to multiple drone ROS2 topics (/cf231/pose, /cf232/pose, ...)
  * @param {string} host - ROS bridge host address
  * @param {number} startCf - Starting Crazyflie number (e.g., 231)
  * @param {number} count - Number of drones
- * @param {function} onUpdate - Position update callback function
+ * @param {function} onUpdate - Position update callback ([x,y,z], liveBlockIndex)
  * @returns {Array} Array of unsubscribe functions
  */
 export function subscribeMultipleDrones(host, startCf, count, onUpdate) {
@@ -301,5 +301,96 @@ export function subscribeMultipleDrones(host, startCf, count, onUpdate) {
     }
     
     return unsubscribeFunctions;
+}
+
+const SIM_TOPIC = "/cf_positions_path";
+const SIM_TYPE = "nav_msgs/Path";
+
+function registerHandlerAndSubscribe(ws, topic, messageType, handler) {
+    let wsUrl = ws.url;
+    if (!wsUrl) {
+        for (const [url, conn] of Object.entries(rosConnections)) {
+            if (conn === ws) {
+                wsUrl = url;
+                break;
+            }
+        }
+    }
+    if (!wsUrl) {
+        wsUrl = `temp_${Date.now()}`;
+        rosConnections[wsUrl] = ws;
+    }
+    if (!topicHandlers[wsUrl]) topicHandlers[wsUrl] = {};
+    topicHandlers[wsUrl][topic] = handler;
+
+    const subMsg = messageType
+        ? { op: "subscribe", topic, type: messageType }
+        : { op: "subscribe", topic };
+
+    if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(subMsg));
+        console.log(`Subscribed to ROS2 topic: ${topic}` + (messageType ? ` (type: ${messageType})` : " (auto-detect type)"));
+    } else {
+        ws.addEventListener("open", () => {
+            ws.send(JSON.stringify(subMsg));
+            console.log(`Subscribed to ROS2 topic after open: ${topic}` + (messageType ? ` (type: ${messageType})` : " (auto-detect type)"));
+        }, { once: true });
+    }
+}
+
+/**
+ * Subscribe to /cf_positions (nav_msgs/Path).
+ * Each message contains PoseStamped elements whose header.frame_id
+ * identifies the drone (e.g. "cf231").  The liveBlockIndex is derived
+ * from the frame_id: index = cfNumber − startCf.
+ *
+ * @param {string}   host     ROS bridge host address
+ * @param {number}   startCf  First Crazyflie number (e.g. 231)
+ * @param {number}   count    Number of drones
+ * @param {function} onUpdate ([x,y,z], liveBlockIndex)
+ * @returns {function} Unsubscribe function
+ */
+export function subscribeSimulation(host, startCf, count, onUpdate) {
+    const ws = connectRosBridge(host);
+
+    const topicHandler = (msg) => {
+        try {
+            const poses = msg.poses;
+            if (!Array.isArray(poses)) return;
+            for (const poseStamped of poses) {
+                const frameId = poseStamped?.header?.frame_id;
+                if (!frameId) continue;
+
+                const cfNum = parseInt(frameId.replace(/\D/g, ""), 10);
+                if (isNaN(cfNum)) continue;
+
+                const idx = cfNum - startCf;
+                if (idx < 0 || idx >= count) continue;
+
+                const pos = poseStamped?.pose?.position ?? {};
+                const x = pos.x != null ? pos.x : 0;
+                const y = pos.y != null ? pos.y : 0;
+                const z = pos.z != null ? pos.z : 0;
+                onUpdate([x, y, z], idx);
+            }
+        } catch (err) {
+            console.error("Error processing /cf_positions:", err, msg);
+        }
+    };
+
+    if (ws.readyState === WebSocket.CONNECTING) {
+        ws.addEventListener("open", () => {
+            registerHandlerAndSubscribe(ws, SIM_TOPIC, SIM_TYPE, topicHandler);
+        });
+    } else if (ws.readyState === WebSocket.OPEN) {
+        registerHandlerAndSubscribe(ws, SIM_TOPIC, SIM_TYPE, topicHandler);
+    } else {
+        console.error(`Cannot subscribe to ${SIM_TOPIC}, WebSocket state: ${ws.readyState}`);
+        return () => {};
+    }
+
+    return () => {
+        unsubscribeRosTopic(ws, SIM_TOPIC);
+    };
 }
 
