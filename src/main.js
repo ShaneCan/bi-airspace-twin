@@ -1,7 +1,7 @@
 import {ENDPOINTS, FORMATS, DEFAULT_GRID} from "./config.js";
 import {BlockWorld} from './BlockWorld.js';
 import {parseBigraphXML_singleBRoot} from './BigraphGridXMLParser.js';
-import {fetchCdoModel, fetchGrid, fetchGrid3D} from "./services.js";
+import {fetchCdoModel, fetchGrid, fetchGrid3D, fetchGrid3DFromOccupancy} from "./services.js";
 
 import * as THREE from 'three';
 import {createScene} from "./scene.js";
@@ -504,6 +504,82 @@ async function fetchCdoAndRender(address, repoPath, coordinatesAsLinks = false, 
     console.log("Loaded bigraph with", cells.length, "roots");
 }
 
+/**
+ * Load an occupancy map JSON, call the 3D bigrid API with matching dimensions,
+ * then render each cell as free (green) or occupied (red).
+ */
+async function loadOccupancyMapAndRender(occupancyData, layerHeightOverride) {
+    const g = occupancyData.grid;
+    const layerHeight = layerHeightOverride ?? g.layerHeight;
+    const statusEl = document.getElementById("occStatus");
+    const setStatus = (msg) => { if (statusEl) statusEl.textContent = msg; };
+
+    setStatus(`Generating ${g.rows}x${g.cols}x${g.layers} bigrid...`);
+    console.log("Loading occupancy map:", g);
+
+    const { xmlString, resolutionFactor: resFactor } = await fetchGrid3DFromOccupancy(
+        occupancyData, layerHeight
+    );
+
+    setStatus("Parsing XMI...");
+    const { cells } = parseBigraphXML_singleBRoot(xmlString, true);
+    console.log(`Parsed ${cells.length} cells from 3D bigrid XMI`);
+
+    gridMode = "3d";
+    const gridModeSelect = document.getElementById("gridMode");
+    if (gridModeSelect) gridModeSelect.value = "3d";
+
+    gridConfig = {
+        rows: g.rows,
+        cols: g.cols,
+        stepX: g.stepSizeX,
+        stepY: g.stepSizeY,
+        layers: g.layers,
+        layerHeight,
+        originX: g.originX,
+        originY: g.originY,
+        originZ: g.originZ,
+        ready: true,
+    };
+
+    blockWorld.clearAll();
+    resolutionFactor = resFactor || g.stepSizeX;
+    initLiveBlock(resolutionFactor, numOfLiveBlocks);
+
+    let freeCount = 0, occCount = 0, skipped = 0;
+
+    for (const cell of cells) {
+        const px = cell.point.x;
+        const py = cell.point.y;
+        const pz = cell.point.z !== undefined ? cell.point.z : 0;
+        if (px === undefined || py === undefined) { skipped++; continue; }
+
+        const rowIdx = Math.round((px - g.originX) / g.stepSizeX);
+        const colIdx = Math.round((py - g.originY) / g.stepSizeY);
+        const layerIdx = Math.round((pz - g.originZ) / layerHeight);
+
+        let isOccupied = true;
+        const layerKey = String(layerIdx);
+        if (
+            occupancyData.occupancy[layerKey] &&
+            rowIdx >= 0 && rowIdx < g.rows &&
+            colIdx >= 0 && colIdx < g.cols
+        ) {
+            isOccupied = occupancyData.occupancy[layerKey][rowIdx]?.[colIdx] === 1;
+        }
+
+        blockWorld.setBlock(px, py, pz, g.stepSizeX, grassMaterial, true, layerHeight, isOccupied, false);
+        if (isOccupied) occCount++; else freeCount++;
+    }
+
+    const showOccCheckbox = document.getElementById("showOccupied");
+    if (showOccCheckbox) {
+        blockWorld.setOccupiedVisible(showOccCheckbox.checked);
+    }
+
+    setStatus(`Done: ${freeCount} free, ${occCount} occupied, ${skipped} skipped`);
+    console.log(`Occupancy map rendered: ${freeCount} free, ${occCount} occupied, ${skipped} skipped`);
+}
 
 document.addEventListener('DOMContentLoaded', () => {
     const slider = document.getElementById("agentSlider");
@@ -595,6 +671,48 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
     });
+
+    // --- Occupancy Map loading ---
+    const occFileInput = document.getElementById("occupancyFile");
+    const loadOccBtn = document.getElementById("loadOccupancyMap");
+    const showOccCheckbox = document.getElementById("showOccupied");
+
+    if (loadOccBtn) {
+        loadOccBtn.addEventListener("click", () => {
+            const file = occFileInput?.files?.[0];
+            if (!file) {
+                alert("Please select an occupancy JSON file first.");
+                return;
+            }
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const data = JSON.parse(e.target.result);
+                    if (!data.grid || !data.occupancy) {
+                        alert("Invalid occupancy JSON: missing 'grid' or 'occupancy' field.");
+                        return;
+                    }
+                    const lhOverride = parseFloat(document.getElementById("occLayerHeight")?.value);
+                    loadOccupancyMapAndRender(data, isNaN(lhOverride) ? undefined : lhOverride)
+                        .then(() => console.log("Occupancy map loaded."))
+                        .catch(err => {
+                            console.error("Failed to load occupancy map:", err);
+                            const statusEl = document.getElementById("occStatus");
+                            if (statusEl) statusEl.textContent = `Error: ${err.message}`;
+                        });
+                } catch (err) {
+                    alert("Failed to parse JSON: " + err.message);
+                }
+            };
+            reader.readAsText(file);
+        });
+    }
+
+    if (showOccCheckbox) {
+        showOccCheckbox.addEventListener("change", (e) => {
+            blockWorld.setOccupiedVisible(e.target.checked);
+        });
+    }
 
     document.getElementById('connectCDO').addEventListener('click', (event) => {
         // Read dataset (stepSize)

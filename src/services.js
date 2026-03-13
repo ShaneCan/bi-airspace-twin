@@ -45,17 +45,18 @@ export async function fetchGrid3D({
                                     stepX = 0.5,
                                     stepY = 0.5,
                                     layerHeight = 0.35,
+                                    originX = -1.0,
+                                    originY = -1.0,
+                                    originZ = 0,
                                     format = FORMATS.xml,
                                     signal,
                                 }) {
-    // Query params (server expects rows/cols/layers/format)
     const query = qs({rows, cols, layers, format});
 
-    // POST body (server expects step sizes, layer height and origin)
     const body = {
-        x: -1.0,
-        y: -1.0,
-        z: 0,
+        x: originX,
+        y: originY,
+        z: originZ,
         stepSizeX: stepX,
         stepSizeY: stepY,
         layerHeight: layerHeight,
@@ -70,6 +71,32 @@ export async function fetchGrid3D({
         resolutionFactor: json?.resolutionFactor ?? 1,
         raw: json,
     };
+}
+
+/**
+ * Generate a 3D bigrid from occupancy map data.
+ * Extracts grid dimensions from the occupancy JSON and calls the 3D bigrid API,
+ * using the map's origin and step sizes so coordinates align.
+ *
+ * @param {Object} occupancyData - Parsed occupancy JSON (grid + occupancy fields)
+ * @param {number} [layerHeightOverride] - Optional override for layerHeight
+ * @returns {Promise<{xmlString: string, resolutionFactor: number, raw: Object}>}
+ */
+export async function fetchGrid3DFromOccupancy(occupancyData, layerHeightOverride) {
+    const g = occupancyData.grid;
+    const layerHeight = layerHeightOverride ?? g.layerHeight;
+
+    return fetchGrid3D({
+        rows: g.rows,
+        cols: g.cols,
+        layers: g.layers,
+        stepX: g.stepSizeX,
+        stepY: g.stepSizeY,
+        layerHeight,
+        originX: g.originX,
+        originY: g.originY,
+        originZ: g.originZ,
+    });
 }
 
 /**

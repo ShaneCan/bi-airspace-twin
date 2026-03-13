@@ -164,6 +164,26 @@
         </div>
     </div>
 
+    <h2>Load Occupancy Map<br/><small>(from scanned grid maps)</small></h2>
+    <div class="panel">
+        <div class="row">
+            <label for="occupancyFile">JSON File</label>
+            <input id="occupancyFile" type="file" accept=".json" style="width:145px; font-size:11px;" />
+        </div>
+        <div class="row">
+            <label for="occLayerHeight">Layer Height (m)</label>
+            <input id="occLayerHeight" type="number" value="0.35" min="0.05" step="0.05" style="width:70px;" />
+        </div>
+        <div class="row">
+            <label for="showOccupied">Show Occupied</label>
+            <input id="showOccupied" type="checkbox" checked />
+        </div>
+        <div class="row">
+            <button id="loadOccupancyMap" class="btn" style="margin-top:8px;">Load &amp; Render</button>
+        </div>
+        <div id="occStatus" style="font-size:11px; color:#666; margin-top:4px;"></div>
+    </div>
+
     <h2>CDO Service</h2>
     <div class="panel">
         <div class="row">

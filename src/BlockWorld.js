@@ -21,55 +21,54 @@ export class BlockWorld {
         return material.color.getHexString();
     }
 
-    //first version
-    setBlock(x, y, z, size, material, is3D = false, layerHeight = 1.0) {
+    setBlock(x, y, z, size, material, is3D = false, layerHeight = 1.0, occupied = false, showLabel = true) {
         const key = this._key(x, y, z);
         if (this.blocks.has(key)) {
             console.warn(`Skipping duplicate block at (${x}, ${y}, ${z})`);
-            return; // already exists
+            return;
         }
 
         let mesh;
         if (is3D) {
-            // 3D mode: Create transparent cube with colored edges
             const geometry = new THREE.BoxGeometry(size, size, layerHeight);
-            
-            // Create transparent material
-            const transparentMaterial = new THREE.MeshBasicMaterial({
-                color: material.color || 0x00ff00,
-                transparent: true,
-                opacity: 0.1,
-                side: THREE.DoubleSide
-            });
-            
-            mesh = new THREE.Mesh(geometry, transparentMaterial);
-            // Position cube so its bottom is at z coordinate (center is at z + layerHeight/2)
+
+            let meshMaterial, edgeColor;
+            if (occupied) {
+                meshMaterial = new THREE.MeshBasicMaterial({
+                    color: 0x8B0000,
+                    transparent: true,
+                    opacity: 0.55,
+                    side: THREE.DoubleSide,
+                });
+                edgeColor = 0x660000;
+            } else {
+                meshMaterial = new THREE.MeshBasicMaterial({
+                    color: material.color || 0x00ff00,
+                    transparent: true,
+                    opacity: 0.1,
+                    side: THREE.DoubleSide,
+                });
+                edgeColor = material.color || 0x00ff00;
+            }
+
+            mesh = new THREE.Mesh(geometry, meshMaterial);
             mesh.position.set(x, y, z + layerHeight / 2);
             this.world.add(mesh);
-            
-            // Add wireframe edges
+
             const edges = new THREE.EdgesGeometry(geometry);
-            const edgeMaterial = new THREE.LineBasicMaterial({
-                color: material.color || 0x00ff00,
-                linewidth: 2
-            });
-            const wireframe = new THREE.LineSegments(edges, edgeMaterial);
+            const edgeMat = new THREE.LineBasicMaterial({ color: edgeColor, linewidth: 2 });
+            const wireframe = new THREE.LineSegments(edges, edgeMat);
             mesh.add(wireframe);
-            
-            // Store wireframe reference for cleanup
             mesh.userData.wireframe = wireframe;
         } else {
-            // 2D mode: Original flat block
-            const geometry = new THREE.BoxGeometry(size, size, size/4);
+            const geometry = new THREE.BoxGeometry(size, size, size / 4);
             mesh = new THREE.Mesh(geometry, material);
             mesh.position.set(x, y, z);
             this.world.add(mesh);
         }
 
-        // Create coordinate label
-        if(true) {
-            if (is3D) {
-                // Place label slightly above the cube bottom to avoid z-fighting, and always render in front
+        if (showLabel) {
+            if (is3D && !occupied) {
                 const coordLbl = new THREE.Vector3(x, y, z + 0.01);
                 const label = this.createTextLabel(
                     `${x}, ${y}, ${z}`,
@@ -78,15 +77,14 @@ export class BlockWorld {
                     { depthTest: false, depthWrite: false, renderOrder: 999 }
                 );
                 this.world.add(label);
-            } else {
+            } else if (!is3D) {
                 const coordLbl = mesh.position.clone();
-                coordLbl.z += size/2 + 0.125;
+                coordLbl.z += size / 2 + 0.125;
                 const label = this.createTextLabel(`${coordLbl.x}, ${coordLbl.y}`, coordLbl, 14);
                 this.world.add(label);
             }
         }
 
-        // Add a timer state to the block (increasing over time), plus highlight state
         const baseColor = mesh.material && mesh.material.color
             ? mesh.material.color.clone()
             : new THREE.Color(0xffffff);
@@ -94,8 +92,9 @@ export class BlockWorld {
             mesh,
             timer: 0,
             is3D,
+            occupied,
             baseColor,
-            highlightCount: 0
+            highlightCount: 0,
         });
     }
 
@@ -126,38 +125,38 @@ export class BlockWorld {
         this.blocks.clear();
     }
 
-        update() {
-        // Loop through blocks and update their timers/material
+    update() {
         for (let [key, block] of this.blocks) {
+            block.timer += 0.01;
+            if (block.timer > 4) block.timer = 0;
 
-            // Example: animate matrix (e.g., bobbing block)
-            // const matrix = new THREE.Matrix4().makeTranslation(0, Math.sin(performance.now() / 500) * 0.1, 0);
-            // block.mesh.updateMatrix();
-            // block.mesh.geometry.applyMatrix4( matrix );
-
-            block.timer += 0.01; // increment timer
-            if (block.timer > 4) block.timer = 0; // reset after 2 seconds
-
-            // If highlighted, keep highlight color and skip animation
             if (block.highlightCount && block.highlightCount > 0) {
                 continue;
             }
 
-            // Change block color based on timer (only for 2D blocks, 3D blocks keep wireframe color)
             if (!block.is3D) {
                 const color = new THREE.Color(0x00ee00).lerp(
                     new THREE.Color(0x00bb00),
-                    Math.sin(block.timer * Math.PI/2)
+                    Math.sin(block.timer * Math.PI / 2)
                 );
                 if (block.mesh.material && block.mesh.material.color) {
                     block.mesh.material.color.set(color);
                 }
+            } else if (block.occupied) {
+                // Occupied 3D blocks: subtle dark-red pulse
+                if (block.mesh.userData.wireframe && block.mesh.userData.wireframe.material) {
+                    const color = new THREE.Color(0x8B0000).lerp(
+                        new THREE.Color(0x660000),
+                        Math.sin(block.timer * Math.PI / 2)
+                    );
+                    block.mesh.userData.wireframe.material.color.set(color);
+                }
             } else {
-                // Update wireframe color for 3D blocks
+                // Free 3D blocks: green pulse
                 if (block.mesh.userData.wireframe && block.mesh.userData.wireframe.material) {
                     const color = new THREE.Color(0x00ee00).lerp(
                         new THREE.Color(0x00bb00),
-                        Math.sin(block.timer * Math.PI/2)
+                        Math.sin(block.timer * Math.PI / 2)
                     );
                     block.mesh.userData.wireframe.material.color.set(color);
                 }
@@ -274,6 +273,16 @@ export class BlockWorld {
         sprite.position.set(position.x, position.y, position.z);
 
         return sprite;
+    }
+
+    setOccupiedVisible(visible) {
+        for (const [, block] of this.blocks) {
+            if (!block.occupied) continue;
+            block.mesh.visible = visible;
+            if (block.mesh.userData.wireframe) {
+                block.mesh.userData.wireframe.visible = visible;
+            }
+        }
     }
 
     clearGroup(group) {
