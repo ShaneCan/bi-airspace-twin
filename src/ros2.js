@@ -1,396 +1,99 @@
-// ROS2 WebSocket connection management using rosbridge WebSocket protocol
+const connections = new Map();
 
-const rosConnections = {};
-const topicHandlers = {};
+function send(ws, op, topic, type) {
+    ws.send(JSON.stringify({op, topic, type}));
+}
 
-/**
- * Connect to ROS bridge WebSocket server
- * @param {string} host - ROS bridge host address (e.g., "localhost:9090" or "ws://localhost:9090")
- * @returns {WebSocket} WebSocket connection
- */
-function connectRosBridge(host = "localhost:9090") {
-    let wsUrl = host;
-    if (!wsUrl.startsWith("ws://") && !wsUrl.startsWith("wss://")) {
-        wsUrl = `ws://${wsUrl}`;
-    }
-    
-    let existingWs = null;
-    let existingUrl = null;
-    for (const [url, ws] of Object.entries(rosConnections)) {
-        if (url === wsUrl || (ws.url && ws.url === wsUrl)) {
-            existingWs = ws;
-            existingUrl = ws.url || url;
-            break;
-        }
-    }
-    
-    if (existingWs && (existingWs.readyState === WebSocket.OPEN || existingWs.readyState === WebSocket.CONNECTING)) {
-        console.log(`ROS bridge connection exists: ${existingUrl} (requested: ${wsUrl}), state: ${existingWs.readyState === WebSocket.OPEN ? 'OPEN' : 'CONNECTING'}`);
-        return existingWs;
-    }
-    
-    if (existingWs && (existingWs.readyState === WebSocket.CLOSED || existingWs.readyState === WebSocket.CLOSING)) {
-        console.log(`Cleaning up closed ROS bridge connection: ${existingUrl || wsUrl}`);
-        if (existingUrl) {
-            delete rosConnections[existingUrl];
-            delete topicHandlers[existingUrl];
-        }
-        if (rosConnections[wsUrl]) {
-            delete rosConnections[wsUrl];
-        }
-        if (topicHandlers[wsUrl]) {
-            delete topicHandlers[wsUrl];
-        }
-    }
-    
-    const ws = new WebSocket(wsUrl);
-    rosConnections[wsUrl] = ws;
-    
-    if (!topicHandlers[wsUrl]) {
-        topicHandlers[wsUrl] = {};
-    }
-    
+function connectRosBridge(host) {
+    const address = /^wss?:\/\//i.test(host) ? host : `ws://${host}`;
+    const url = new URL(address).href;
+    const existing = connections.get(url);
+    if (existing && existing.ws.readyState <= WebSocket.OPEN) return existing;
+
+    const ws = new WebSocket(url);
+    const topics = new Map();
+    const connection = {ws, topics};
+    connections.set(url, connection);
+
     ws.addEventListener("open", () => {
-        const actualUrl = ws.url;
-        console.log(`ROS bridge connection established: ${actualUrl} (requested: ${wsUrl})`);
-        
-        if (actualUrl !== wsUrl) {
-            rosConnections[actualUrl] = ws;
-            if (rosConnections[wsUrl]) {
-                delete rosConnections[wsUrl];
-            }
-            
-            if (topicHandlers[wsUrl]) {
-                if (!topicHandlers[actualUrl]) {
-                    topicHandlers[actualUrl] = {};
-                }
-                Object.assign(topicHandlers[actualUrl], topicHandlers[wsUrl]);
-                delete topicHandlers[wsUrl];
-                console.log(`Migrated topic handlers from ${wsUrl} to ${actualUrl}`, {
-                    topics: Object.keys(topicHandlers[actualUrl])
-                });
-            } else {
-                if (!topicHandlers[actualUrl]) {
-                    topicHandlers[actualUrl] = {};
-                }
-            }
-        } else {
-            if (!topicHandlers[actualUrl]) {
-                topicHandlers[actualUrl] = {};
-            }
-        }
-        
-        if (!ws._messageDispatcherAdded) {
-            const messageDispatcher = (event) => {
-                try {
-                    const data = JSON.parse(event.data);
-                    
-                    if (data.op === "publish" && data.topic && data.msg) {
-                        const url = ws.url;
-                        const handler = topicHandlers[url] && topicHandlers[url][data.topic];
-                        if (handler) {
-                            handler(data.msg);
-                        } else {
-                            console.warn(`Topic handler not found: ${data.topic}`, {
-                                url,
-                                availableTopics: topicHandlers[url] ? Object.keys(topicHandlers[url]) : [],
-                                topicHandlersKeys: Object.keys(topicHandlers)
-                            });
-                        }
-                    }
-                } catch (err) {
-                    console.warn(`Failed to parse ROS2 message:`, err, event.data);
-                }
-            };
-            
-            ws.addEventListener("message", messageDispatcher);
-            ws._messageDispatcherAdded = true;
-            console.log(`Message dispatcher added to connection: ${actualUrl}`);
-        }
+        if (connections.get(url) !== connection) return;
+        for (const [topic, {type}] of topics) send(ws, "subscribe", topic, type);
     });
-    
-    ws.addEventListener("close", () => {
-        console.warn(`ROS bridge connection closed: ${wsUrl}`);
-        delete rosConnections[wsUrl];
-        ws._messageDispatcherAdded = false;
-    });
-    
-    ws.addEventListener("error", (e) => {
-        console.error(`ROS bridge connection error: ${wsUrl}`, e);
-    });
-    
-    return ws;
-}
 
-/**
- * Subscribe to ROS2 topic
- * @param {string} host - ROS bridge host address
- * @param {string} topic - Topic name (e.g., "/cf231/pose")
- * @param {string} messageType - Message type (e.g., "geometry_msgs/PoseStamped")
- * @param {function} onMessage - Message callback function
- * @param {number} liveBlockIndex - Corresponding live block index
- * @returns {function} Unsubscribe function
- */
-export function subscribeRosTopic(host, topic, messageType, onMessage, liveBlockIndex = 0) {
-    const ws = connectRosBridge(host);
-    
-    if (ws.readyState === WebSocket.CONNECTING) {
-        ws.addEventListener("open", () => {
-            doSubscribe(ws, topic, messageType, onMessage, liveBlockIndex);
-        });
-    } else if (ws.readyState === WebSocket.OPEN) {
-        doSubscribe(ws, topic, messageType, onMessage, liveBlockIndex);
-    } else {
-        console.error(`Cannot subscribe to topic ${topic}, WebSocket state: ${ws.readyState}`);
-        return () => {};
-    }
-    
-    return () => {
-        unsubscribeRosTopic(ws, topic);
-    };
-}
-
-function doSubscribe(ws, topic, messageType, onMessage, liveBlockIndex) {
-    let wsUrl = ws.url;
-    if (!wsUrl) {
-        for (const [url, conn] of Object.entries(rosConnections)) {
-            if (conn === ws) {
-                wsUrl = url;
-                break;
-            }
-        }
-    }
-    
-    if (!wsUrl) {
-        wsUrl = `temp_${Date.now()}`;
-        rosConnections[wsUrl] = ws;
-    }
-    
-    if (!topicHandlers[wsUrl]) {
-        topicHandlers[wsUrl] = {};
-    }
-    
-    if (ws.readyState === WebSocket.OPEN && !ws._messageDispatcherAdded) {
-        const messageDispatcher = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-                
-                if (data.op === "publish" && data.topic && data.msg) {
-                    const actualUrl = ws.url;
-                    const handler = topicHandlers[actualUrl] && topicHandlers[actualUrl][data.topic];
-                    if (handler) {
-                        handler(data.msg);
-                    } else {
-                        console.warn(`Topic handler not found: ${data.topic}`, {
-                            actualUrl,
-                            availableTopics: topicHandlers[actualUrl] ? Object.keys(topicHandlers[actualUrl]) : [],
-                            topicHandlersKeys: Object.keys(topicHandlers)
-                        });
-                    }
-                }
-            } catch (err) {
-                console.warn(`Failed to parse ROS2 message:`, err, event.data);
-            }
-        };
-        
-        ws.addEventListener("message", messageDispatcher);
-        ws._messageDispatcherAdded = true;
-        console.log(`Message dispatcher added to open connection: ${wsUrl}`);
-    }
-    
-    const topicHandler = (msg) => {
+    ws.addEventListener("message", event => {
+        if (connections.get(url) !== connection) return;
         try {
-            if (messageType === "geometry_msgs/PoseStamped") {
-                const pose = msg.pose;
-                if (pose && pose.position) {
-                    const x = pose.position.x || 0;
-                    const y = pose.position.y || 0;
-                    const z = pose.position.z || 0;
-                    
-                    onMessage([x, y, z], liveBlockIndex);
-                } else {
-                    console.warn(`Invalid message format, missing pose.position:`, msg);
-                }
-            } else {
-                onMessage(msg, liveBlockIndex);
-            }
-        } catch (err) {
-            console.error(`Error processing message for topic ${topic}:`, err, msg);
+            const {op, topic, msg} = JSON.parse(event.data);
+            if (op === "publish" && msg) topics.get(topic)?.handler(msg);
+        } catch (error) {
+            console.warn("Could not process ROS2 message", error);
         }
-    };
-    
-    topicHandlers[wsUrl][topic] = topicHandler;
-    console.log(`Registered topic handler: ${topic} (URL: ${wsUrl})`, {
-        registeredTopics: Object.keys(topicHandlers[wsUrl]),
-        allUrls: Object.keys(topicHandlers)
     });
-    
-    if (ws.readyState === WebSocket.OPEN) {
-        const subscribeMsg = {
-            op: "subscribe",
-            topic: topic,
-            type: messageType
-        };
-        
-        ws.send(JSON.stringify(subscribeMsg));
-        console.log(`Subscribed to ROS2 topic: ${topic} (type: ${messageType})`);
-    } else {
-        console.warn(`Cannot subscribe to topic ${topic}, WebSocket state: ${ws.readyState}, waiting for connection...`);
-        ws.addEventListener("open", () => {
-            const subscribeMsg = {
-                op: "subscribe",
-                topic: topic,
-                type: messageType
-            };
-            ws.send(JSON.stringify(subscribeMsg));
-            console.log(`Subscribed to ROS2 topic after connection opened: ${topic}`);
-        }, { once: true });
-    }
+
+    ws.addEventListener("close", () => {
+        if (connections.get(url) === connection) connections.delete(url);
+    });
+
+    return connection;
 }
 
-function unsubscribeRosTopic(ws, topic) {
-    if (ws.readyState === WebSocket.OPEN) {
-        const unsubscribeMsg = {
-            op: "unsubscribe",
-            topic: topic
-        };
-        ws.send(JSON.stringify(unsubscribeMsg));
-        console.log(`Unsubscribed from ROS2 topic: ${topic}`);
-        
-        const wsUrl = ws.url;
-        if (topicHandlers[wsUrl] && topicHandlers[wsUrl][topic]) {
-            delete topicHandlers[wsUrl][topic];
+function subscribe(host, topic, type, handler) {
+    const {ws, topics} = connectRosBridge(host);
+    const entry = {type, handler};
+    const subscribed = topics.has(topic);
+    topics.set(topic, entry);
+    if (!subscribed && ws.readyState === WebSocket.OPEN) send(ws, "subscribe", topic, type);
+    return () => {
+        if (topics.get(topic) !== entry) return;
+        topics.delete(topic);
+        if (ws.readyState === WebSocket.OPEN) send(ws, "unsubscribe", topic);
+    };
+}
+
+export function subscribeRosTopic(host, topic, messageType, onMessage, liveBlockIndex = 0) {
+    return subscribe(host, topic, messageType, msg => {
+        if (messageType === "geometry_msgs/PoseStamped") {
+            if (msg.pose?.position) onMessage(readPosition(msg.pose.position), liveBlockIndex);
+        } else {
+            onMessage(msg, liveBlockIndex);
         }
-    }
+    });
 }
 
 export function disconnectAllRosConnections() {
-    for (const [url, ws] of Object.entries(rosConnections)) {
-        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-            console.log(`Closing ROS bridge connection: ${url}`);
-            if (topicHandlers[url]) {
-                for (const topic of Object.keys(topicHandlers[url])) {
-                    unsubscribeRosTopic(ws, topic);
-                }
-            }
-            ws.close();
+    const active = [...connections.values()];
+    connections.clear();
+    for (const {ws, topics} of active) {
+        if (ws.readyState === WebSocket.OPEN) {
+            for (const topic of topics.keys()) send(ws, "unsubscribe", topic);
         }
-        delete rosConnections[url];
-        delete topicHandlers[url];
+        topics.clear();
+        if (ws.readyState <= WebSocket.OPEN) ws.close();
     }
 }
 
-/**
- * Subscribe to multiple drone ROS2 topics (/cf231/pose, /cf232/pose, ...)
- * @param {string} host - ROS bridge host address
- * @param {number} startCf - Starting Crazyflie number (e.g., 231)
- * @param {number} count - Number of drones
- * @param {function} onUpdate - Position update callback ([x,y,z], liveBlockIndex)
- * @returns {Array} Array of unsubscribe functions
- */
 export function subscribeMultipleDrones(host, startCf, count, onUpdate) {
-    const unsubscribeFunctions = [];
-    
-    for (let i = 0; i < count; i++) {
-        const cfNumber = startCf + i;
-        const topic = `/cf${cfNumber}/pose`;
-        const messageType = "geometry_msgs/PoseStamped";
-        
-        const unsubscribe = subscribeRosTopic(host, topic, messageType, onUpdate, i);
-        unsubscribeFunctions.push(unsubscribe);
-    }
-    
-    return unsubscribeFunctions;
+    return Array.from({length: count}, (_, index) => subscribeRosTopic(
+        host, `/cf${startCf + index}/pose`, "geometry_msgs/PoseStamped", onUpdate, index,
+    ));
 }
 
-const SIM_TOPIC = "/cf_positions_path";
-const SIM_TYPE = "nav_msgs/Path";
-
-function registerHandlerAndSubscribe(ws, topic, messageType, handler) {
-    let wsUrl = ws.url;
-    if (!wsUrl) {
-        for (const [url, conn] of Object.entries(rosConnections)) {
-            if (conn === ws) {
-                wsUrl = url;
-                break;
-            }
-        }
-    }
-    if (!wsUrl) {
-        wsUrl = `temp_${Date.now()}`;
-        rosConnections[wsUrl] = ws;
-    }
-    if (!topicHandlers[wsUrl]) topicHandlers[wsUrl] = {};
-    topicHandlers[wsUrl][topic] = handler;
-
-    const subMsg = messageType
-        ? { op: "subscribe", topic, type: messageType }
-        : { op: "subscribe", topic };
-
-    if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(subMsg));
-        console.log(`Subscribed to ROS2 topic: ${topic}` + (messageType ? ` (type: ${messageType})` : " (auto-detect type)"));
-    } else {
-        ws.addEventListener("open", () => {
-            ws.send(JSON.stringify(subMsg));
-            console.log(`Subscribed to ROS2 topic after open: ${topic}` + (messageType ? ` (type: ${messageType})` : " (auto-detect type)"));
-        }, { once: true });
-    }
-}
-
-/**
- * Subscribe to /cf_positions (nav_msgs/Path).
- * Each message contains PoseStamped elements whose header.frame_id
- * identifies the drone (e.g. "cf231").  The liveBlockIndex is derived
- * from the frame_id: index = cfNumber − startCf.
- *
- * @param {string}   host     ROS bridge host address
- * @param {number}   startCf  First Crazyflie number (e.g. 231)
- * @param {number}   count    Number of drones
- * @param {function} onUpdate ([x,y,z], liveBlockIndex)
- * @returns {function} Unsubscribe function
- */
 export function subscribeSimulation(host, startCf, count, onUpdate) {
-    const ws = connectRosBridge(host);
-
-    const topicHandler = (msg) => {
-        try {
-            const poses = msg.poses;
-            if (!Array.isArray(poses)) return;
-            for (const poseStamped of poses) {
-                const frameId = poseStamped?.header?.frame_id;
-                if (!frameId) continue;
-
-                const cfNum = parseInt(frameId.replace(/\D/g, ""), 10);
-                if (isNaN(cfNum)) continue;
-
-                const idx = cfNum - startCf;
-                if (idx < 0 || idx >= count) continue;
-
-                const pos = poseStamped?.pose?.position ?? {};
-                const x = pos.x != null ? pos.x : 0;
-                const y = pos.y != null ? pos.y : 0;
-                const z = pos.z != null ? pos.z : 0;
-                onUpdate([x, y, z], idx);
+    return subscribe(host, "/cf_positions_path", "nav_msgs/Path", msg => {
+        if (!Array.isArray(msg.poses)) return;
+        for (const stampedPose of msg.poses) {
+            const frameId = stampedPose?.header?.frame_id;
+            if (typeof frameId !== "string") continue;
+            const cfNumber = Number.parseInt(frameId.replace(/\D/g, ""), 10);
+            const index = cfNumber - startCf;
+            if (Number.isInteger(index) && index >= 0 && index < count) {
+                onUpdate(readPosition(stampedPose.pose?.position), index);
             }
-        } catch (err) {
-            console.error("Error processing /cf_positions:", err, msg);
         }
-    };
-
-    if (ws.readyState === WebSocket.CONNECTING) {
-        ws.addEventListener("open", () => {
-            registerHandlerAndSubscribe(ws, SIM_TOPIC, SIM_TYPE, topicHandler);
-        });
-    } else if (ws.readyState === WebSocket.OPEN) {
-        registerHandlerAndSubscribe(ws, SIM_TOPIC, SIM_TYPE, topicHandler);
-    } else {
-        console.error(`Cannot subscribe to ${SIM_TOPIC}, WebSocket state: ${ws.readyState}`);
-        return () => {};
-    }
-
-    return () => {
-        unsubscribeRosTopic(ws, SIM_TOPIC);
-    };
+    });
 }
 
+function readPosition(position) {
+    const {x, y, z} = position ?? {};
+    return [x ?? 0, y ?? 0, z ?? 0];
+}

@@ -1,314 +1,211 @@
-import * as THREE from 'three';
+import * as THREE from "three";
+
+const COLORS = {
+    free: 0x41855c,
+    perimeter: 0x296744,
+    occupied: 0x8b0000,
+    single: 0xffd700,
+    shared: 0xff0000,
+};
+
+const OBSTACLE_OPACITY = .36;
+const UAS_OCCUPANCY_OPACITY = .32;
+
+function cellEdges({x, y, z, width, depth, height}) {
+    const left = x - width / 2;
+    const right = x + width / 2;
+    const front = y - depth / 2;
+    const back = y + depth / 2;
+    const top = z + height;
+    return [
+        [left, front, z, right, front, z], [left, back, z, right, back, z],
+        [left, front, top, right, front, top], [left, back, top, right, back, top],
+        [left, front, z, left, back, z], [right, front, z, right, back, z],
+        [left, front, top, left, back, top], [right, front, top, right, back, top],
+        [left, front, z, left, front, top], [right, front, z, right, front, top],
+        [left, back, z, left, back, top], [right, back, z, right, back, top],
+    ];
+}
+
+function lineSegments(positions, color, opacity) {
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    return new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({
+        color, opacity, transparent: opacity < 1, depthWrite: false,
+    }));
+}
+
+function outline(cells, color, opacity, bounds) {
+    const uniqueEdges = new Set();
+    const exterior = [];
+    const interior = [];
+    const limits = bounds ? [bounds.min.toArray(), bounds.max.toArray()] : [];
+    for (const cell of cells) {
+        for (const edge of cellEdges(cell)) {
+            const key = edge.map(value => Math.round(value * 1e6)).join(",");
+            if (uniqueEdges.has(key)) continue;
+            uniqueEdges.add(key);
+            const onFace = bounds && limits.some(limit => limit.some((value, axis) =>
+                Math.abs(edge[axis] - value) < 1e-6 && Math.abs(edge[axis + 3] - value) < 1e-6,
+            ));
+            (bounds && !onFace ? interior : exterior).push(...edge);
+        }
+    }
+    const lines = new THREE.Group();
+    if (interior.length) lines.add(lineSegments(interior, color, opacity * .48));
+    if (exterior.length) lines.add(lineSegments(exterior, color, opacity));
+    return lines;
+}
+
+function surfaces(cells, {color, opacity, solid = false}) {
+    const geometry = solid ? new THREE.BoxGeometry() : new THREE.PlaneGeometry();
+    const material = new THREE.MeshBasicMaterial({
+        color, opacity, transparent: opacity < 1, depthWrite: solid,
+        side: solid ? THREE.FrontSide : THREE.DoubleSide,
+    });
+    const mesh = new THREE.InstancedMesh(geometry, material, cells.length);
+    const transform = new THREE.Object3D();
+    for (const [index, {x, y, z, width, depth, height}] of cells.entries()) {
+        transform.position.set(x, y, solid ? z + height / 2 : z + height);
+        transform.scale.set(width, depth, height);
+        transform.updateMatrix();
+        mesh.setMatrixAt(index, transform.matrix);
+    }
+    return mesh;
+}
 
 export class BlockWorld {
-    constructor(scene, world) {
-        this.scene = scene;
-        this.world = world;
-        this.blocks = new Map(); // key: "x,y,z", value: { mesh, timer }
+    constructor(world) {
+        this.base = new THREE.Group();
+        this.occupied = new THREE.Group();
+        this.highlights = new THREE.Group();
+        world.add(this.base, this.occupied, this.highlights);
+        this.blocks = new Map();
     }
 
-    /** Round to fixed decimals so grid cell keys match across lookups (avoids float mismatch). */
-    _roundCoord(v, decimals = 6) {
-        const f = Math.pow(10, decimals);
-        return Math.round(v * f) / f;
+    static key(x, y, z) {
+        return [x, y, z].map(value => Math.round(value * 1e6) / 1e6).join(",");
     }
 
-    _key(x, y, z) {
-        return `${this._roundCoord(x)},${this._roundCoord(y)},${this._roundCoord(z)}`;
-    }
-    _materialKey(material) {
-        // Assumes you're identifying materials by their color
-        return material.color.getHexString();
-    }
+    render(cells, {flat = false, emphasizePerimeter = false} = {}) {
+        this.clear();
+        const bounds = new THREE.Box3();
+        const free = [];
+        const occupied = [];
 
-    setBlock(x, y, z, size, material, is3D = false, layerHeight = 1.0, occupied = false, showLabel = true) {
-        const key = this._key(x, y, z);
-        if (this.blocks.has(key)) {
-            console.warn(`Skipping duplicate block at (${x}, ${y}, ${z})`);
-            return;
-        }
-
-        let mesh;
-        if (is3D) {
-            const geometry = new THREE.BoxGeometry(size, size, layerHeight);
-
-            let meshMaterial, edgeColor;
-            if (occupied) {
-                meshMaterial = new THREE.MeshBasicMaterial({
-                    color: 0x8B0000,
-                    transparent: true,
-                    opacity: 0.55,
-                    side: THREE.DoubleSide,
-                });
-                edgeColor = 0x660000;
-            } else {
-                meshMaterial = new THREE.MeshBasicMaterial({
-                    color: material.color || 0x00ff00,
-                    transparent: true,
-                    opacity: 0.1,
-                    side: THREE.DoubleSide,
-                });
-                edgeColor = material.color || 0x00ff00;
-            }
-
-            mesh = new THREE.Mesh(geometry, meshMaterial);
-            mesh.position.set(x, y, z + layerHeight / 2);
-            this.world.add(mesh);
-
-            const edges = new THREE.EdgesGeometry(geometry);
-            const edgeMat = new THREE.LineBasicMaterial({ color: edgeColor, linewidth: 2 });
-            const wireframe = new THREE.LineSegments(edges, edgeMat);
-            mesh.add(wireframe);
-            mesh.userData.wireframe = wireframe;
-        } else {
-            const geometry = new THREE.BoxGeometry(size, size, size / 4);
-            mesh = new THREE.Mesh(geometry, material);
-            mesh.position.set(x, y, z);
-            this.world.add(mesh);
-        }
-
-        if (showLabel) {
-            if (is3D && !occupied) {
-                const coordLbl = new THREE.Vector3(x, y, z + 0.01);
-                const label = this.createTextLabel(
-                    `${x}, ${y}, ${z}`,
-                    coordLbl,
-                    14,
-                    { depthTest: false, depthWrite: false, renderOrder: 999 }
-                );
-                this.world.add(label);
-            } else if (!is3D) {
-                const coordLbl = mesh.position.clone();
-                coordLbl.z += size / 2 + 0.125;
-                const label = this.createTextLabel(`${coordLbl.x}, ${coordLbl.y}`, coordLbl, 14);
-                this.world.add(label);
+        for (const cell of cells) {
+            const {x, y, z, width, depth, height} = cell;
+            const key = BlockWorld.key(x, y, z);
+            if (this.blocks.has(key)) continue;
+            this.blocks.set(key, {cell, count: 0, highlight: null});
+            (cell.occupied ? occupied : free).push(cell);
+            bounds.expandByPoint(new THREE.Vector3(x - width / 2, y - depth / 2, z));
+            bounds.expandByPoint(new THREE.Vector3(x + width / 2, y + depth / 2, z + height));
+            if (flat) {
+                this.base.add(this.createTextLabel(`${x}, ${y}`, new THREE.Vector3(x, y, z + height * 2)));
             }
         }
 
-        const baseColor = mesh.material && mesh.material.color
-            ? mesh.material.color.clone()
-            : new THREE.Color(0xffffff);
-        this.blocks.set(key, {
-            mesh,
-            timer: 0,
-            is3D,
-            occupied,
-            baseColor,
-            highlightCount: 0,
-        });
-    }
-
-
-    removeBlock(x, y, z) {
-        const key = this._key(x, y, z);
-        const block = this.blocks.get(key);
-        if (block) {
-            // Clean up wireframe if exists
-            if (block.mesh.userData.wireframe) {
-                block.mesh.remove(block.mesh.userData.wireframe);
-                block.mesh.userData.wireframe.geometry.dispose();
-                block.mesh.userData.wireframe.material.dispose();
-            }
-            // this.scene.remove(block.mesh);
-            this.world.remove(block.mesh);
-            this.blocks.delete(key);
+        if (free.length) {
+            this.base.add(surfaces(free, {color: COLORS.free, opacity: flat ? .4 : .066, solid: flat}));
+            this.base.add(outline(free, COLORS.free, .60, emphasizePerimeter ? bounds : undefined));
         }
-    }
-
-    clearAll() {
-        // Remove all blocks from the scene
-        for (let [key, block] of this.blocks) {
-            // this.scene.remove(block.mesh);
-            this.world.remove(block.mesh);
+        if (occupied.length) {
+            this.occupied.add(surfaces(occupied, {color: COLORS.occupied, opacity: OBSTACLE_OPACITY, solid: true}));
+            this.occupied.add(outline(occupied, COLORS.occupied, .8));
         }
-        this.clearGroup(this.world);
-        this.blocks.clear();
-    }
-
-    update() {
-        for (let [key, block] of this.blocks) {
-            block.timer += 0.01;
-            if (block.timer > 4) block.timer = 0;
-
-            if (block.highlightCount && block.highlightCount > 0) {
-                continue;
-            }
-
-            if (!block.is3D) {
-                const color = new THREE.Color(0x00ee00).lerp(
-                    new THREE.Color(0x00bb00),
-                    Math.sin(block.timer * Math.PI / 2)
-                );
-                if (block.mesh.material && block.mesh.material.color) {
-                    block.mesh.material.color.set(color);
-                }
-            } else if (block.occupied) {
-                // Occupied 3D blocks: subtle dark-red pulse
-                if (block.mesh.userData.wireframe && block.mesh.userData.wireframe.material) {
-                    const color = new THREE.Color(0x8B0000).lerp(
-                        new THREE.Color(0x660000),
-                        Math.sin(block.timer * Math.PI / 2)
-                    );
-                    block.mesh.userData.wireframe.material.color.set(color);
-                }
-            } else {
-                // Free 3D blocks: green pulse
-                if (block.mesh.userData.wireframe && block.mesh.userData.wireframe.material) {
-                    const color = new THREE.Color(0x00ee00).lerp(
-                        new THREE.Color(0x00bb00),
-                        Math.sin(block.timer * Math.PI / 2)
-                    );
-                    block.mesh.userData.wireframe.material.color.set(color);
-                }
-            }
+        if (emphasizePerimeter && !bounds.isEmpty()) {
+            const frame = new THREE.Box3Helper(bounds.clone(), COLORS.perimeter);
+            frame.material.depthWrite = false;
+            this.base.add(frame);
         }
+        return bounds;
     }
 
-    /**
-     * Highlight a cell at the given world coordinates (x,y,z).
-     * If multiple drones occupy the same cell, we keep a reference count.
-     */
-    highlightCellAt(x, y, z) {
-        const key = this._key(x, y, z);
+    highlightCell(key, delta) {
         const block = this.blocks.get(key);
         if (!block) return;
 
-        block.highlightCount = (block.highlightCount || 0) + 1;
+        const oldColor = Math.min(block.count, 2);
+        block.count = Math.max(0, block.count + delta);
+        const newColor = Math.min(block.count, 2);
+        if (oldColor === newColor) return;
 
-        // Choose color based on number of drones in this cell:
-        // 1 drone -> gold, 2 or more -> red
-        const color =
-            block.highlightCount === 1
-                ? new THREE.Color(0xffd700) // gold
-                : new THREE.Color(0xff0000); // red
-
-        if (block.mesh.material && block.mesh.material.color) {
-            block.mesh.material.color.set(color);
+        if (block.highlight) {
+            block.highlight.removeFromParent();
+            this.dispose(block.highlight);
+            block.highlight = null;
         }
-        if (block.mesh.userData.wireframe && block.mesh.userData.wireframe.material) {
-            block.mesh.userData.wireframe.material.color.set(color);
-        }
-    }
+        if (newColor === 0) return;
 
-    /**
-     * Remove highlight from a cell. Only resets when reference count drops to zero.
-     */
-    unhighlightCellAt(x, y, z) {
-        const key = this._key(x, y, z);
-        const block = this.blocks.get(key);
-        if (!block) return;
-
-        if (!block.highlightCount || block.highlightCount <= 0) {
-            block.highlightCount = 0;
-            return;
-        }
-
-        block.highlightCount -= 1;
-
-        // After decrement, choose appropriate color
-        if (block.highlightCount === 0) {
-            // Restore base color
-            if (block.mesh.material && block.mesh.material.color && block.baseColor) {
-                block.mesh.material.color.copy(block.baseColor);
-            }
-            if (block.mesh.userData.wireframe && block.mesh.userData.wireframe.material && block.baseColor) {
-                block.mesh.userData.wireframe.material.color.copy(block.baseColor);
-            }
-        } else if (block.highlightCount === 1) {
-            // Back to single-drone: gold
-            const color = new THREE.Color(0xffd700);
-            if (block.mesh.material && block.mesh.material.color) {
-                block.mesh.material.color.set(color);
-            }
-            if (block.mesh.userData.wireframe && block.mesh.userData.wireframe.material) {
-                block.mesh.userData.wireframe.material.color.set(color);
-            }
-        } else {
-            // Still multi-drone: red
-            const color = new THREE.Color(0xff0000);
-            if (block.mesh.material && block.mesh.material.color) {
-                block.mesh.material.color.set(color);
-            }
-            if (block.mesh.userData.wireframe && block.mesh.userData.wireframe.material) {
-                block.mesh.userData.wireframe.material.color.set(color);
-            }
-        }
-    }
-
-    createTextLabel(text, position, fontSize = 28, options = {}) {
-        const { depthTest = true, depthWrite = true, renderOrder = 0 } = options;
-        // Create canvas to draw text
-        const canvas = document.createElement('canvas');
-        const context = canvas.getContext('2d');
-        // const fontSize = 42;
-
-        canvas.width = 512;
-        canvas.height = 128;
-
-        // Style text
-        context.font = `${fontSize}px Arial`;
-        context.fillStyle = 'white';
-        context.textAlign = 'center';
-        context.textBaseline = 'middle';
-        context.fillText(text, canvas.width / 2, canvas.height / 2);
-
-        // Create texture
-        const texture = new THREE.CanvasTexture(canvas);
-        texture.minFilter = THREE.LinearFilter;
-        texture.needsUpdate = true;
-
-        // Create sprite
-        const material = new THREE.SpriteMaterial({
-            map: texture,
-            transparent: true,
-            depthTest,
-            depthWrite,
-        });
-        const sprite = new THREE.Sprite(material);
-        sprite.renderOrder = renderOrder;
-
-        // Scale and position sprite
-        const scale = 1;
-        sprite.scale.set(2 * scale, 0.5 * scale, 1);
-        sprite.position.set(position.x, position.y, position.z);
-
-        return sprite;
+        const color = newColor === 1 ? COLORS.single : COLORS.shared;
+        const marker = new THREE.Group();
+        marker.renderOrder = 2;
+        marker.add(surfaces([block.cell], {color, opacity: UAS_OCCUPANCY_OPACITY, solid: true}));
+        marker.add(outline([block.cell], color, .9));
+        marker.visible = !block.cell.occupied || this.occupied.visible;
+        block.highlight = marker;
+        this.highlights.add(marker);
     }
 
     setOccupiedVisible(visible) {
-        for (const [, block] of this.blocks) {
-            if (!block.occupied) continue;
-            block.mesh.visible = visible;
-            if (block.mesh.userData.wireframe) {
-                block.mesh.userData.wireframe.visible = visible;
-            }
+        this.occupied.visible = visible;
+        for (const {cell, highlight} of this.blocks.values()) {
+            if (cell.occupied && highlight) highlight.visible = visible;
         }
     }
 
-    clearGroup(group) {
-        while (group.children.length > 0) {
-            const child = group.children[0];
-
-            // Dispose geometry
-            if (child.geometry) {
-                child.geometry.dispose();
-            }
-
-            // Dispose material (handle arrays too)
-            if (child.material) {
-                if (Array.isArray(child.material)) {
-                    child.material.forEach(m => m.dispose());
-                } else {
-                    child.material.dispose();
-                }
-            }
-
-            // Dispose texture if present
-            if (child.material && child.material.map) {
-                child.material.map.dispose();
-            }
-
-            group.remove(child);
+    clear() {
+        for (const group of [this.base, this.occupied, this.highlights]) {
+            this.dispose(group);
+            group.clear();
         }
+        this.blocks.clear();
+    }
+
+    dispose(object) {
+        const materials = new Set();
+        object.traverse(child => {
+            if (child.isInstancedMesh) child.dispose();
+            child.geometry?.dispose();
+            if (child.material) materials.add(child.material);
+        });
+        for (const material of materials) {
+            material.map?.dispose();
+            material.dispose();
+        }
+    }
+
+    createTextLabel(text, position, {live = false} = {}) {
+        const canvas = document.createElement("canvas");
+        canvas.width = live ? 168 : 256;
+        canvas.height = 64;
+        const context = canvas.getContext("2d");
+        if (live) {
+            context.fillStyle = "#f8fcf7";
+            context.strokeStyle = "#83a991";
+            context.lineWidth = 2;
+            context.beginPath();
+            context.roundRect(3, 3, canvas.width - 6, canvas.height - 6, 12);
+            context.fill();
+            context.stroke();
+        }
+        context.font = live ? "600 34px monospace" : "30px monospace";
+        context.fillStyle = "#183329";
+        context.textAlign = "center";
+        context.textBaseline = "middle";
+        context.fillText(text, canvas.width / 2, canvas.height / 2);
+        const texture = new THREE.CanvasTexture(canvas);
+        texture.colorSpace = THREE.SRGBColorSpace;
+        const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+            map: texture,
+            transparent: true,
+            depthTest: !live,
+            depthWrite: false,
+        }));
+        sprite.scale.set(live ? .48 : .72, .18, 1);
+        sprite.position.copy(position);
+        if (live) sprite.renderOrder = 10;
+        return sprite;
     }
 }

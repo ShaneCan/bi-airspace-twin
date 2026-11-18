@@ -1,4 +1,4 @@
-import {ENDPOINTS, FORMATS} from "./config.js";
+import {DEFAULT_GRID, ENDPOINTS, FORMATS} from "./config.js";
 
 /**
  * Calls the grid generator endpoint and returns:
@@ -45,9 +45,9 @@ export async function fetchGrid3D({
                                     stepX = 0.5,
                                     stepY = 0.5,
                                     layerHeight = 0.35,
-                                    originX = -1.0,
-                                    originY = -1.0,
-                                    originZ = 0,
+                                    originX = DEFAULT_GRID.originX,
+                                    originY = DEFAULT_GRID.originY,
+                                    originZ = DEFAULT_GRID.originZ,
                                     format = FORMATS.xml,
                                     signal,
                                 }) {

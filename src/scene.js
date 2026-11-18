@@ -1,95 +1,89 @@
 import * as THREE from "three";
 import {PointerLockControls} from "three-stdlib";
 
-const raycaster = new THREE.Raycaster();
-const intersectedObjects = [];
-
-export function createScene() {
-
-
+export function createScene(viewport) {
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x87ceeb); // sky blue
-    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-    // const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-    camera.position.set(4, 4, 12); // pull camera back
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    document.body.appendChild(renderer.domElement);
+    scene.background = new THREE.Color(0xedf4ef);
 
-    // Basic light setup
-    const light = new THREE.DirectionalLight(0xffffff, 1);
-    light.position.set(10, 10, 10);
-    scene.add(light);
-    scene.add(new THREE.AmbientLight(0xffffff, 0.3));
+    const camera = new THREE.PerspectiveCamera(38, 1, .02, 500);
+    const renderer = new THREE.WebGLRenderer({antialias: true});
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    const canvas = renderer.domElement;
+    canvas.tabIndex = 0;
+    canvas.setAttribute("aria-label", "3D airspace. Press Enter to look around, Escape to exit.");
+    viewport.append(canvas);
 
-    // Start on click
-    document.body.addEventListener('click', () => {
-        controls.lock();
+    const light = new THREE.DirectionalLight(0xffffff, 2);
+    light.position.set(10, 14, 7);
+    scene.add(light, new THREE.AmbientLight(0xffffff, 1.6));
+
+    const controls = new PointerLockControls(camera, canvas);
+    canvas.addEventListener("click", () => controls.lock());
+    canvas.addEventListener("keydown", event => {
+        if (event.code === "Enter") controls.lock();
     });
 
-// Controls
-    const controls = new PointerLockControls(camera, renderer.domElement);
-    scene.add(controls.getObject());
+    const viewDirection = new THREE.Vector3(1.03, .94, 1.65).normalize();
+    const right = new THREE.Vector3().crossVectors(camera.up, viewDirection).normalize();
+    const up = new THREE.Vector3().crossVectors(viewDirection, right);
+    let framedBounds;
+    let floor;
 
-    return { scene, camera, renderer, controls };
+    function fitCamera(bounds) {
+        const center = bounds.getCenter(new THREE.Vector3());
+        const vertical = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+        const horizontal = vertical * camera.aspect;
+        let distance = .35;
+        const corners = [];
+        for (const x of [bounds.min.x, bounds.max.x]) {
+            for (const y of [bounds.min.y, bounds.max.y]) {
+                for (const z of [bounds.min.z, bounds.max.z]) {
+                    const corner = new THREE.Vector3(x, y, z).sub(center);
+                    const projected = [corner.dot(right), corner.dot(up), corner.dot(viewDirection)];
+                    const fit = Math.max(Math.abs(projected[0]) / horizontal, Math.abs(projected[1]) / vertical);
+                    distance = Math.max(distance, projected[2] + fit * 1.24);
+                    corners.push(projected);
+                }
+            }
+        }
+        const projectedX = corners.map(([x, , z]) => x / (distance - z));
+        const projectedY = corners.map(([, y, z]) => y / (distance - z));
+        center.addScaledVector(right, (Math.min(...projectedX) + Math.max(...projectedX)) * distance / 2);
+        center.addScaledVector(up, (Math.min(...projectedY) + Math.max(...projectedY)) * distance / 2);
+        camera.position.copy(center).addScaledVector(viewDirection, distance);
+        camera.lookAt(center);
+        camera.updateMatrixWorld();
+    }
+
+    function resize() {
+        const {width, height} = viewport.getBoundingClientRect();
+        if (!width || !height) return;
+        camera.aspect = width / height;
+        camera.updateProjectionMatrix();
+        renderer.setSize(width, height, false);
+        if (framedBounds && !controls.isLocked) fitCamera(framedBounds);
+    }
+    new ResizeObserver(resize).observe(viewport);
+    resize();
+
+    function frameAirspace(bounds, groundSpacing) {
+        framedBounds = bounds.clone();
+        const size = bounds.getSize(new THREE.Vector3());
+        const floorSize = Math.max(size.x, size.z, groundSpacing * 4) * 2.3;
+        const subdivisions = Math.min(64, Math.max(4, Math.round(floorSize / groundSpacing)));
+        if (floor) {
+            floor.removeFromParent();
+            floor.dispose();
+        }
+        floor = new THREE.GridHelper(floorSize, subdivisions, 0xb8d0be, 0xc9ddce);
+        floor.position.copy(bounds.getCenter(new THREE.Vector3()));
+        floor.position.y = bounds.min.y - .015;
+        floor.material.transparent = true;
+        floor.material.opacity = .53;
+        floor.material.depthWrite = false;
+        scene.add(floor);
+        fitCamera(framedBounds);
+    }
+
+    return {scene, camera, renderer, controls, frameAirspace};
 }
-
-// Function to detect block under the pointer
-// function getIntersectedBlock() {
-//     // const origin = camera.position.clone();
-//     // const direction = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
-//     // drawRay(origin, direction, 10); // 10 units long
-//
-//     // Set the origin to the camera position
-//     raycaster.ray.origin.copy(camera.position);
-//
-//     // Set the direction to where the camera is looking
-//     raycaster.ray.direction.set(0, 0, -1).applyQuaternion(camera.quaternion);
-//
-//     // Intersect all block meshes
-//     const intersects = raycaster.intersectObjects(scene.children, false);
-//     if (intersects.length > 0) {
-//         return intersects[0];
-//     }
-//     return null;
-// }
-
-// document.addEventListener('mousedown', (event) => {
-//     const intersect = getIntersectedBlock();
-//     console.log(intersect);
-//     if (!intersect) return;
-//
-//     if (event.button === 0) {
-//         // Left-click: Place block
-//         const {point, face, object} = intersect;
-//
-//         // Get the position of the block hit
-//         const blockPos = object.position.clone();
-//
-//         // Face normal tells us which direction to offset
-//         const offset = face.normal.clone().round();
-//         const placePos = blockPos.add(offset);
-//
-//         blockWorld.setBlock(
-//             placePos.x,
-//             placePos.y,
-//             placePos.z,
-//             1,
-//             new THREE.MeshStandardMaterial({color: 0xff0000}) // example red block
-//         );
-//     } else if (event.button === 2) {
-//         // Right-click: Remove block
-//         const {point} = intersect;
-//         const blockPos = point.clone().floor(); // snap to grid
-//         blockWorld.removeBlock(blockPos.x, blockPos.y, blockPos.z);
-//     }
-// });
-//
-// function drawRay(origin, direction, length = 10, color = 0xffff00) {
-//     const arrowHelper = new THREE.ArrowHelper(direction.clone().normalize(), origin, length, color);
-//     scene.add(arrowHelper);
-//     return arrowHelper;
-// }
-
-
-//------------------------------------------------------

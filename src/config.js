@@ -1,8 +1,13 @@
 export const DEFAULT_GRID = Object.freeze({
     rows: 5,
     cols: 5,
-    stepX: 0.5,
-    stepY: 0.5,
+    stepX: 1,
+    stepY: 1,
+    layers: 3,
+    layerHeight: 0.35,
+    originX: -1,
+    originY: -1,
+    originZ: 0,
 });
 
 /**

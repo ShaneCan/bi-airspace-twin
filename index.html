@@ -1,302 +1,104 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8" />
-    <title>Bi-Space Viewer</title>
-    <style>
-        :root {
-            --sidebar-w: 280px;
-            --sidebar-bg: rgba(255,255,255,0.92);
-            --sidebar-border: rgba(0,0,0,0.08);
-        }
-        * { box-sizing: border-box; }
-        html, body { height: 100%; margin: 0; }
-        body { overflow: hidden; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Arial, sans-serif; }
-
-        /* Canvas covers full viewport; sits "under" the sidebar via z-index */
-        canvas { display: block; position: fixed; inset: 0; z-index: 0; }
-
-        /* Sidebar */
-        #sidebar {
-            position: fixed;
-            top: 0;
-            left: 0;
-            height: 100%;
-            width: var(--sidebar-w);
-            z-index: 10;                /* above canvas */
-            background: var(--sidebar-bg);
-            backdrop-filter: saturate(1.2) blur(2px);
-            border-right: 1px solid var(--sidebar-border);
-            box-shadow: 0 8px 24px rgba(0,0,0,0.08);
-            display: flex;
-            flex-direction: column;
-            padding: 12px;
-            gap: 12px;
-            overflow: auto;             /* scroll if content grows */
-            pointer-events: auto;       /* ensure it captures events */
-        }
-
-        #sidebar h2 {
-            font-size: 14px;
-            margin: 0 0 4px;
-            opacity: 0.7;
-            text-transform: uppercase;
-            letter-spacing: .08em;
-        }
-
-        .btn {
-            display: inline-block;
-            width: 100%;
-            padding: 8px 10px;
-            border-radius: 10px;
-            border: 1px solid var(--sidebar-border);
-            background: white;
-            cursor: pointer;
-            font-weight: 600;
-        }
-        .btn:active { transform: translateY(1px); }
-
-        .panel {
-            background: white;
-            border: 1px solid var(--sidebar-border);
-            border-radius: 12px;
-            padding: 10px;
-        }
-
-        .row {
-            display: grid;
-            grid-template-columns: 1fr auto;
-            align-items: center;
-            gap: 10px;
-            margin: 6px 0;
-        }
-
-        /* Optional: nudge canvas content right visually, without affecting raycasting */
-        body::before {
-            content: "";
-            position: fixed;
-            left: var(--sidebar-w);
-            top: 0;
-            bottom: 0;
-            width: 1px;
-            pointer-events: none;
-            z-index: 5;
-            background: linear-gradient(to bottom, rgba(0,0,0,0.06), rgba(0,0,0,0));
-        }
-    </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f7faf6">
+    <title>Bi-Airspace Twin</title>
+    <link rel="stylesheet" href="/src/styles.css">
 </head>
 <body>
+    <header class="app-header">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <h1>Bi-Airspace Twin</h1>
+    </header>
 
-<!-- Sidebar UI (captures events so they don't reach the canvas) -->
-<aside id="sidebar" aria-label="Controls">
-    <h2><a href="https://github.com/UniAgent-CyberPhysicalAssets/cps.asset.crazyflie/tree/main/controller/cf.PyControl" target="_blank">Drone Connections</a><br/><small>(ROS2)</small></h2>
-    <div class="panel">
-        <div class="row">
-            <label for="rosBridgeHost">ROS Bridge</label>
-            <input id="rosBridgeHost" type="text" value="localhost:9090" style="width:140px;" />
-        </div>
+    <main class="workspace">
+        <aside class="controls" aria-label="Airspace controls">
+            <section class="control-section" aria-labelledby="uasHeading">
+                <h2 id="uasHeading">UAS Connections</h2>
+                <label class="field">ROS Bridge
+                    <input id="rosBridgeHost" type="text" value="localhost:9090" spellcheck="false">
+                </label>
+                <label class="check"><input id="simulationMode" type="checkbox"> Simulation mode</label>
+                <form id="uasForm">
+                    <div class="fleet-field">
+                        <label class="field" for="uasCount">UAS Count
+                            <input id="uasCount" type="number" min="1" max="30" step="1" value="1" required aria-describedby="uasRange uasError">
+                        </label>
+                        <output id="uasRange" for="uasCount" aria-live="polite">cf231</output>
+                    </div>
+                    <button type="submit" hidden>Apply UAS count</button>
+                    <p id="uasError" class="status" role="status"></p>
+                </form>
+                <details class="fleet-details">
+                    <summary>UAS list</summary>
+                    <ul id="uasList" class="fleet-list"></ul>
+                </details>
+            </section>
 
-        <div class="row">
-            <label for="simulationMode">Simulation mode</label>
-            <input id="simulationMode" type="checkbox" />
-        </div>
-        
-        <div class="row">
-            <label for="agentSlider">Drone Count</label>
-            <span id="agentCountValue">1</span>
-        </div>
-        <input id="agentSlider" type="range" min="1" max="8" step="1" value="1" />
-        <div style="font-size:11px; color:#666; margin-top:4px;">
-            <span id="droneRangeText">cf231</span>
-        </div>
+            <section class="control-section" aria-labelledby="gridHeading">
+                <h2 id="gridHeading">Grid-based Airspace</h2>
+                <form id="gridForm">
+                    <div class="field-grid">
+                        <label class="field">Rows<input id="rows" name="rows" type="number" min="1" max="20" step="1" required></label>
+                        <label class="field">Cols<input id="cols" name="cols" type="number" min="1" max="20" step="1" required></label>
+                        <label class="field">Step X (m)<input id="stepX" name="stepX" type="number" min="0.1" max="2" step="any" required></label>
+                        <label class="field">Step Y (m)<input id="stepY" name="stepY" type="number" min="0.1" max="2" step="any" required></label>
+                        <label class="field">Layers<input id="layers" name="layers" type="number" min="1" max="10" step="1" required></label>
+                        <label class="field">Layer Height (m)<input id="layerHeight" name="layerHeight" type="number" min="0.1" max="5" step="any" required></label>
+                    </div>
+                    <div class="field-grid origin-grid">
+                        <label class="field">Origin X (m)<input id="originX" name="originX" type="number" step="any" required></label>
+                        <label class="field">Origin Y (m)<input id="originY" name="originY" type="number" step="any" required></label>
+                        <label class="field">Origin Z (m)<input id="originZ" name="originZ" type="number" step="any" required></label>
+                    </div>
+                    <button id="fetchServiceAPI" class="button button-primary" type="submit">Generate 3D grid</button>
+                    <p id="gridStatus" class="status" role="status"></p>
+                </form>
+            </section>
 
-        <div id="agentButtons"></div>
-    </div>
+            <details class="service-section">
+                <summary><h2>Occupancy Map</h2></summary>
+                <form id="occupancyForm">
+                    <label class="field">JSON file<input id="occupancyFile" type="file" accept=".json,application/json" required></label>
+                    <label class="field">Layer Height (m)<input id="occLayerHeight" type="number" value="0.35" min="0.05" step="any"></label>
+                    <label class="check"><input id="showOccupied" type="checkbox" checked> Show occupied</label>
+                    <button id="loadOccupancyMap" class="button" type="submit">Load &amp; render</button>
+                    <p id="occStatus" class="status" role="status"></p>
+                </form>
+            </details>
 
-    <h2>Grid-based Airspace<br/><small>(Bigrid-Provider-Service)</small></h2>
-    <div class="panel">
-        <div class="row">
-            <label for="gridMode">Mode</label>
-            <select id="gridMode" style="width:145px;">
-                <option value="2d">2D</option>
-                <option value="3d">3D</option>
-            </select>
-        </div>
-        
-        <div class="row">
-            <label for="rowsSlider">Rows</label>
-            <span id="rowsValue">5</span>
-        </div>
-        <input id="rowsSlider" type="range" min="1" max="20" step="1" value="5" />
+            <details class="service-section">
+                <summary><h2>CDO Service</h2></summary>
+                <form id="cdoForm">
+                    <label class="field">Host:port<input id="cdoHost" type="text" value="127.0.0.1:2036" required spellcheck="false"></label>
+                    <label class="field">Repository path<input id="cdoRepo" type="text" value="/repo1/system" required spellcheck="false"></label>
+                    <label class="check"><input id="coordAsLinks" type="checkbox"> Coordinates as links</label>
+                    <button id="connectCDO" class="button" type="submit">Connect to CDO</button>
+                    <p id="cdoStatus" class="status" role="status"></p>
+                </form>
+            </details>
+        </aside>
 
-        <div class="row">
-            <label for="colsSlider">Cols</label>
-            <span id="colsValue">5</span>
-        </div>
-        <input id="colsSlider" type="range" min="1" max="20" step="1" value="5" />
+        <section class="airspace" aria-labelledby="airspaceHeading">
+            <div class="airspace-header">
+                <h2 id="airspaceHeading">Airspace</h2>
+                <p id="airspaceSource">Local preview</p>
+            </div>
+            <div id="viewport" aria-label="Interactive 3D airspace"></div>
+            <footer class="airspace-footer">
+                <ul class="legend" aria-label="Grid cell colors">
+                    <li><span class="swatch free"></span>Free</li>
+                    <li><span class="swatch obstacle"></span>Obstacle</li>
+                    <li><span class="swatch single"></span>Single UAS</li>
+                    <li><span class="swatch shared"></span>Shared cell</li>
+                </ul>
+                <p class="navigation-hint">Click to look around · WASD to move · Q/E to rise or descend · Esc to exit</p>
+            </footer>
+        </section>
+    </main>
 
-        <div class="row">
-            <label for="stepXSlider">Step X</label>
-            <span id="stepXValue">1</span>
-        </div>
-        <input id="stepXSlider" type="range" min="0.1" max="2" step="0.1" value="1" />
-
-        <div class="row">
-            <label for="stepYSlider">Step Y</label>
-            <span id="stepYValue">1</span>
-        </div>
-        <input id="stepYSlider" type="range" min="0.1" max="2" step="0.1" value="1" />
-
-        <div class="row" id="layersRow" style="display:none;">
-            <label for="layersSlider">Layers</label>
-            <span id="layersValue">3</span>
-        </div>
-        <input id="layersSlider" type="range" min="1" max="10" step="1" value="3" style="display:none;" />
-
-        <div class="row" id="layerHeightRow" style="display:none;">
-            <label for="layerHeightSlider">Layer Height</label>
-            <span id="layerHeightValue">0.35</span>
-        </div>
-        <input id="layerHeightSlider" type="range" min="0.1" max="5" step="0.01" value="0.35" style="display:none;" />
-
-        <div class="row">
-            <button id="fetchServiceAPI" class="btn" data-stepsize="0.25" style="margin-top:8px;">Call Service</button>
-        </div>
-    </div>
-
-    <h2>Load Occupancy Map<br/><small>(from scanned grid maps)</small></h2>
-    <div class="panel">
-        <div class="row">
-            <label for="occupancyFile">JSON File</label>
-            <input id="occupancyFile" type="file" accept=".json" style="width:145px; font-size:11px;" />
-        </div>
-        <div class="row">
-            <label for="occLayerHeight">Layer Height (m)</label>
-            <input id="occLayerHeight" type="number" value="0.35" min="0.05" step="0.05" style="width:70px;" />
-        </div>
-        <div class="row">
-            <label for="showOccupied">Show Occupied</label>
-            <input id="showOccupied" type="checkbox" checked />
-        </div>
-        <div class="row">
-            <button id="loadOccupancyMap" class="btn" style="margin-top:8px;">Load &amp; Render</button>
-        </div>
-        <div id="occStatus" style="font-size:11px; color:#666; margin-top:4px;"></div>
-    </div>
-
-    <h2>CDO Service</h2>
-    <div class="panel">
-        <div class="row">
-            <label for="cdoHost">Host:Port</label>
-            <input id="cdoHost" type="text" value="127.0.0.1:2036" style="width:140px;" />
-        </div>
-
-        <div class="row">
-            <label for="cdoRepo">Repository + Path</label>
-            <input id="cdoRepo" type="text" value="/repo1/system" style="width:140px;" />
-        </div>
-        <div class="row">
-            <label for="coordAsLinks">Coords as Links</label>
-            <input id="coordAsLinks" type="checkbox" />
-        </div>
-        <div class="row">
-            <button id="connectCDO" class="btn" style="margin-top:8px;">Connect to CDO</button>
-        </div>
-    </div>
-
-</aside>
-
-<!-- Application Module -->
-<script type="module" src="src/main.js" defer></script>
-
-<!-- Hard stop event propagation so nothing bubbles to canvas/OrbitControls -->
-<script>
-    document.addEventListener('DOMContentLoaded', () => {
-        const sidebar = document.getElementById('sidebar');
-        if (!sidebar) return;
-
-        // Let sidebar controls do their thing, but don't let events leak to the canvas
-        const stopBubble = (e) => {
-            e.stopPropagation();
-        };
-
-        // If you *also* want to suppress the browser's context menu inside the sidebar, use this:
-        const stopBubbleAndPrevent = (e) => {
-            e.stopPropagation();
-            e.preventDefault();
-        };
-
-        // Events we want to contain to the sidebar (no leak to canvas)
-        // Use bubble phase (capture: false) so button/input handlers still run.
-        [
-            'click', 'dblclick',
-            'pointerdown', 'pointermove', 'pointerup',
-            'wheel',
-            'touchstart', 'touchmove', 'touchend',
-            'keydown', 'keyup'
-        ].forEach(type => {
-            // Do NOT preventDefault on wheel/touch by default or you'll kill scrolling/gestures.
-            sidebar.addEventListener(type, stopBubble, { capture: false });
-        });
-
-        // Optional: suppress context menu in sidebar too (otherwise omit this)
-        sidebar.addEventListener('contextmenu', stopBubbleAndPrevent, { capture: false });
-
-        const agentSlider = document.getElementById('agentSlider');
-        const droneRangeText = document.getElementById('droneRangeText');
-        const gridModeSelect = document.getElementById('gridMode');
-        const layersRow = document.getElementById('layersRow');
-        const layersSlider = document.getElementById('layersSlider');
-        const layerHeightRow = document.getElementById('layerHeightRow');
-        const layerHeightSlider = document.getElementById('layerHeightSlider');
-        
-        function updateGridModeUI() {
-            const gridMode = gridModeSelect.value;
-            if (gridMode === '3d') {
-                layersRow.style.display = 'grid';
-                layersSlider.style.display = 'block';
-                layerHeightRow.style.display = 'grid';
-                layerHeightSlider.style.display = 'block';
-            } else {
-                layersRow.style.display = 'none';
-                layersSlider.style.display = 'none';
-                layerHeightRow.style.display = 'none';
-                layerHeightSlider.style.display = 'none';
-            }
-        }
-        
-        function updateDroneRangeText() {
-            const count = +agentSlider.value;
-            const startCf = 231;
-            if (count === 1) {
-                droneRangeText.textContent = `cf${startCf}`;
-            } else {
-                droneRangeText.textContent = `cf${startCf} - cf${startCf + count - 1}`;
-            }
-        }
-        
-        if (agentSlider) {
-            agentSlider.addEventListener('input', updateDroneRangeText);
-        }
-        if (gridModeSelect) {
-            gridModeSelect.addEventListener('change', updateGridModeUI);
-        }
-        if (layersSlider) {
-            layersSlider.addEventListener('input', () => {
-                document.getElementById('layersValue').textContent = layersSlider.value;
-            });
-        }
-        if (layerHeightSlider) {
-            layerHeightSlider.addEventListener('input', () => {
-                const value = parseFloat(layerHeightSlider.value);
-                document.getElementById('layerHeightValue').textContent = value.toFixed(2);
-            });
-        }
-        
-        updateGridModeUI();
-        updateDroneRangeText();
-    });
-</script>
-
+    <script type="module" src="/src/main.js"></script>
 </body>
 </html>
