@@ -13,7 +13,7 @@ A web-based viewer for 3D **bigrids**. It provides an interactive 3D environment
   - Configure 1–30 UAS in the ROS2 connection panel
   - Visualize simulated or physical Crazyflie drone positions as a colored drone
   (via
-  `cf.PyControl` [WebSocket integration](https://github.com/UniAgent-CyberPhysicalAssets/cps.asset.crazyflie/tree/main/controller/cf.PyControl))
+  `cf.PyControl` [ROS2 integration](https://github.com/ShaneCan/FEDT-Bigrid-UAS/tree/main/cps.asset.crazyflie))
 - **3D Navigation**
   - Free-flight camera
 
